@@ -7,7 +7,7 @@ require (
 	github.com/klauspost/compress v1.18.4
 	github.com/odvcencio/arbiter v1.6.0
 	github.com/odvcencio/canopy v0.15.0
-	github.com/odvcencio/gotreesitter v0.13.0
+	github.com/odvcencio/gotreesitter v0.15.1
 	github.com/spf13/cobra v1.10.2
 	golang.org/x/crypto v0.46.0
 )

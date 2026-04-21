@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"path/filepath"
 
-	"github.com/odvcencio/graft/pkg/repo"
 	"github.com/spf13/cobra"
 )
 
@@ -28,7 +27,7 @@ func newWorktreeAddCmd() *cobra.Command {
 		Short: "Create a new linked worktree",
 		Args:  cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			r, err := repo.Open(".")
+			r, err := openRepo(".")
 			if err != nil {
 				return err
 			}
@@ -64,7 +63,7 @@ func newWorktreeListCmd() *cobra.Command {
 		Short: "List all worktrees",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			r, err := repo.Open(".")
+			r, err := openRepo(".")
 			if err != nil {
 				return err
 			}
@@ -94,7 +93,7 @@ func newWorktreeRemoveCmd() *cobra.Command {
 		Short: "Remove a worktree",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			r, err := repo.Open(".")
+			r, err := openRepo(".")
 			if err != nil {
 				return err
 			}
@@ -116,7 +115,7 @@ func newWorktreePruneCmd() *cobra.Command {
 		Short: "Remove stale worktree entries",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			r, err := repo.Open(".")
+			r, err := openRepo(".")
 			if err != nil {
 				return err
 			}

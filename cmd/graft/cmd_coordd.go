@@ -44,7 +44,7 @@ func newCoorddCmd() *cobra.Command {
 }
 
 func openCoorddRuntime() (*repo.Repo, *coord.Coordinator, error) {
-	r, err := repo.Open(".")
+	r, err := openRepo(".")
 	if err != nil {
 		return nil, nil, fmt.Errorf("open repo: %w", err)
 	}

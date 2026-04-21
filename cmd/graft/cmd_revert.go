@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 
-	"github.com/odvcencio/graft/pkg/repo"
 	"github.com/spf13/cobra"
 )
 
@@ -15,7 +14,7 @@ func newRevertCmd() *cobra.Command {
 		Short: "Revert a commit by creating an inverse commit",
 		Args:  cobra.RangeArgs(0, 1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			r, err := repo.Open(".")
+			r, err := openRepo(".")
 			if err != nil {
 				return err
 			}

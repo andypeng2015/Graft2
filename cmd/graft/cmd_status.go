@@ -19,7 +19,7 @@ func newStatusCmd() *cobra.Command {
 		Short: "Show working tree status",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			r, err := repo.Open(".")
+			r, err := openRepo(".")
 			if err != nil {
 				return err
 			}

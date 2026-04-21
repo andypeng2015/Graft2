@@ -19,7 +19,7 @@ For each conflicted file, lists the specific entities (functions, types, etc.)
 that are in conflict and the type of conflict (both modified, delete vs modify).`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			r, err := repo.Open(".")
+			r, err := openRepo(".")
 			if err != nil {
 				return err
 			}

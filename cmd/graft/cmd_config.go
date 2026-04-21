@@ -70,7 +70,7 @@ func configSetGlobal(key, value string) error {
 }
 
 func configSetRepo(key, value string) error {
-	r, err := repo.Open(".")
+	r, err := openRepo(".")
 	if err != nil {
 		return err
 	}
@@ -140,7 +140,7 @@ func configGetGlobal(cmd *cobra.Command, key string) error {
 }
 
 func configGetWithFallback(cmd *cobra.Command, key string) error {
-	r, err := repo.Open(".")
+	r, err := openRepo(".")
 	if err != nil {
 		return err
 	}
@@ -213,7 +213,7 @@ func configList(cmd *cobra.Command, global bool) error {
 		lines = formatUserConfig(cfg)
 	} else {
 		// Show repo config, then global config for completeness.
-		r, err := repo.Open(".")
+		r, err := openRepo(".")
 		if err != nil {
 			return err
 		}

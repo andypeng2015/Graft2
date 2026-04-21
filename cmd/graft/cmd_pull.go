@@ -24,7 +24,7 @@ func newPullCmd() *cobra.Command {
 				return fmt.Errorf("--merge and --rebase are mutually exclusive")
 			}
 
-			r, err := repo.Open(".")
+			r, err := openRepo(".")
 			if err != nil {
 				return err
 			}

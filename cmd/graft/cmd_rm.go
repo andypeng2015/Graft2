@@ -1,7 +1,6 @@
 package main
 
 import (
-	"github.com/odvcencio/graft/pkg/repo"
 	"github.com/spf13/cobra"
 )
 
@@ -13,7 +12,7 @@ func newRmCmd() *cobra.Command {
 		Short: "Remove files from working tree and stage the deletion",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			r, err := repo.Open(".")
+			r, err := openRepo(".")
 			if err != nil {
 				return err
 			}

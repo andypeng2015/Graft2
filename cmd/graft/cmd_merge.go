@@ -17,7 +17,7 @@ func newMergeCmd() *cobra.Command {
 		Short: "Merge a branch into the current branch",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			r, err := repo.Open(".")
+			r, err := openRepo(".")
 			if err != nil {
 				return err
 			}

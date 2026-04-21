@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 
-	"github.com/odvcencio/graft/pkg/repo"
 	"github.com/spf13/cobra"
 )
 
@@ -23,7 +22,7 @@ Use -c to create a new branch and switch to it in one step.`,
 				return fmt.Errorf("branch name is required (or use -c to create a new branch)")
 			}
 
-			r, err := repo.Open(".")
+			r, err := openRepo(".")
 			if err != nil {
 				return err
 			}

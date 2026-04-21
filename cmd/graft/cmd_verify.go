@@ -18,7 +18,7 @@ func newVerifyCmd() *cobra.Command {
 		Short: "Verify object integrity and commit signatures",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			r, err := repo.Open(".")
+			r, err := openRepo(".")
 			if err != nil {
 				return err
 			}
@@ -70,7 +70,7 @@ func newVerifyCommitCmd() *cobra.Command {
 		Short: "Verify a single commit's signature",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			r, err := repo.Open(".")
+			r, err := openRepo(".")
 			if err != nil {
 				return err
 			}
@@ -106,7 +106,7 @@ func newVerifyPushLimitsCmd() *cobra.Command {
 		Short: "Check whether a ref can be pushed under the graft object-size limits",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			r, err := repo.Open(".")
+			r, err := openRepo(".")
 			if err != nil {
 				return err
 			}

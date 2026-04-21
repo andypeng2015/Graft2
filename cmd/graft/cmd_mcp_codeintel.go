@@ -9,7 +9,6 @@ import (
 
 	"github.com/odvcencio/graft/pkg/coord"
 	"github.com/odvcencio/graft/pkg/entity"
-	"github.com/odvcencio/graft/pkg/repo"
 )
 
 // mcpCodeintelToolDefs returns tool definitions for code intelligence.
@@ -107,7 +106,7 @@ func mcpToolCIEntities(args map[string]any) (any, error) {
 		return nil, fmt.Errorf("file is required")
 	}
 
-	r, err := repo.Open(".")
+	r, err := openRepo(".")
 	if err != nil {
 		return nil, fmt.Errorf("open repo: %w", err)
 	}
@@ -177,7 +176,7 @@ func mcpToolCISymbols(args map[string]any) (any, error) {
 		}
 	}
 
-	r, err := repo.Open(".")
+	r, err := openRepo(".")
 	if err != nil {
 		return nil, fmt.Errorf("open repo: %w", err)
 	}

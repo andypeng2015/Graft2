@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 
-	"github.com/odvcencio/graft/pkg/repo"
 	"github.com/spf13/cobra"
 )
 
@@ -15,7 +14,7 @@ func newBranchCmd() *cobra.Command {
 		Short: "List, create, or delete branches",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			r, err := repo.Open(".")
+			r, err := openRepo(".")
 			if err != nil {
 				return err
 			}

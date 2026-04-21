@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/odvcencio/graft/pkg/repo"
 	"github.com/spf13/cobra"
 )
 
@@ -14,7 +13,7 @@ func newRemoteCmd() *cobra.Command {
 		Short: "Manage repository remotes",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			r, err := repo.Open(".")
+			r, err := openRepo(".")
 			if err != nil {
 				return err
 			}
@@ -39,7 +38,7 @@ func newRemoteCmd() *cobra.Command {
 		Short: "Add a named remote",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			r, err := repo.Open(".")
+			r, err := openRepo(".")
 			if err != nil {
 				return err
 			}
@@ -60,7 +59,7 @@ func newRemoteCmd() *cobra.Command {
 		Short: "Update a named remote URL",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			r, err := repo.Open(".")
+			r, err := openRepo(".")
 			if err != nil {
 				return err
 			}

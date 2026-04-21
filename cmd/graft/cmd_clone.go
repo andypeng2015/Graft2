@@ -192,7 +192,7 @@ func syncModulesAfterClone(cmd *cobra.Command, absDest string, skip bool) error 
 	if skip {
 		return nil
 	}
-	r, err := repo.Open(absDest)
+	r, err := openRepo(absDest)
 	if err != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(), "warning: module sync: open repo: %v\n", err)
 		return nil
@@ -221,7 +221,7 @@ func resolveLocalCloneSource(source string) (string, bool, error) {
 	if err != nil {
 		return "", false, fmt.Errorf("resolve source: %w", err)
 	}
-	srcRepo, err := repo.Open(absSource)
+	srcRepo, err := openRepo(absSource)
 	if err != nil {
 		return "", false, nil
 	}
@@ -242,7 +242,7 @@ func cloneFromLocalSource(cmd *cobra.Command, sourceRoot, sourceSpec, absDest, r
 	// will rebuild the index and set HEAD correctly.
 	os.Remove(filepath.Join(dstGraftDir, "index"))
 
-	r, err := repo.Open(absDest)
+	r, err := openRepo(absDest)
 	if err != nil {
 		return err
 	}

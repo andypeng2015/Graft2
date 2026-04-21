@@ -23,7 +23,7 @@ func newLogCmd() *cobra.Command {
 		Use:   "log",
 		Short: "Show commit history",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			r, err := repo.Open(".")
+			r, err := openRepo(".")
 			if err != nil {
 				return err
 			}

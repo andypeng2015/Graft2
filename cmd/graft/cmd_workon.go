@@ -37,7 +37,7 @@ Use --as to register as a named agent. Use --done to deregister and release all 
 				return fmt.Errorf("either --as <name> or --done is required")
 			}
 
-			r, err := repo.Open(".")
+			r, err := openRepo(".")
 			if err != nil {
 				return fmt.Errorf("open repo: %w", err)
 			}

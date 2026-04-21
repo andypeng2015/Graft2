@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"github.com/odvcencio/graft/pkg/remote"
-	"github.com/odvcencio/graft/pkg/repo"
 	"github.com/spf13/cobra"
 )
 
@@ -35,7 +34,7 @@ func newLFSTrackCmd() *cobra.Command {
 		Short: "Track files matching pattern with LFS",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			r, err := repo.Open(".")
+			r, err := openRepo(".")
 			if err != nil {
 				return err
 			}
@@ -84,7 +83,7 @@ func newLFSUntrackCmd() *cobra.Command {
 		Short: "Stop tracking files matching pattern with LFS",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			r, err := repo.Open(".")
+			r, err := openRepo(".")
 			if err != nil {
 				return err
 			}
@@ -137,7 +136,7 @@ func newLFSLsFilesCmd() *cobra.Command {
 		Short: "List LFS-tracked files in staging",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			r, err := repo.Open(".")
+			r, err := openRepo(".")
 			if err != nil {
 				return err
 			}
@@ -175,7 +174,7 @@ func newLFSStatusCmd() *cobra.Command {
 		Short: "Show LFS status for tracked files",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			r, err := repo.Open(".")
+			r, err := openRepo(".")
 			if err != nil {
 				return err
 			}
@@ -220,7 +219,7 @@ func newLFSPushCmd() *cobra.Command {
 		Short: "Push LFS objects to a remote",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			r, err := repo.Open(".")
+			r, err := openRepo(".")
 			if err != nil {
 				return err
 			}
@@ -269,7 +268,7 @@ func newLFSFetchCmd() *cobra.Command {
 		Short: "Fetch missing LFS objects from a remote",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			r, err := repo.Open(".")
+			r, err := openRepo(".")
 			if err != nil {
 				return err
 			}

@@ -89,7 +89,7 @@ func mcpToolGrep(args map[string]any) (any, error) {
 	}
 	pathPattern := mcpArgString(args, "path_pattern")
 
-	r, err := repo.Open(".")
+	r, err := openRepo(".")
 	if err != nil {
 		return nil, fmt.Errorf("open repo: %w", err)
 	}
@@ -151,7 +151,7 @@ func mcpToolGrepReplace(args map[string]any) (any, error) {
 	pathPattern := mcpArgString(args, "path_pattern")
 	apply := mcpArgBool(args, "apply")
 
-	r, err := repo.Open(".")
+	r, err := openRepo(".")
 	if err != nil {
 		return nil, fmt.Errorf("open repo: %w", err)
 	}
@@ -337,7 +337,7 @@ func mcpToolEntityEdit(args map[string]any) (any, error) {
 		return nil, fmt.Errorf("unknown operation %q; must be one of: replace_body, insert_after, insert_before, delete", operation)
 	}
 
-	r, err := repo.Open(".")
+	r, err := openRepo(".")
 	if err != nil {
 		return nil, fmt.Errorf("open repo: %w", err)
 	}

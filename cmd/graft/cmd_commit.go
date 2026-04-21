@@ -30,7 +30,7 @@ func newCommitCmd() *cobra.Command {
 				return fmt.Errorf("commit message is required (-m)")
 			}
 
-			r, err := repo.Open(".")
+			r, err := openRepo(".")
 			if err != nil {
 				return err
 			}

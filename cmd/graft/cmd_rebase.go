@@ -51,7 +51,7 @@ Use --continue after resolving conflicts, --abort to cancel, or --skip to skip a
 				return fmt.Errorf("--autosquash requires --interactive (-i)")
 			}
 
-			r, err := repo.Open(".")
+			r, err := openRepo(".")
 			if err != nil {
 				return err
 			}

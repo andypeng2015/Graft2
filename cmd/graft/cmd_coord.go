@@ -56,7 +56,7 @@ func newCoordCmd() *cobra.Command {
 
 // openCoordinator opens the repo and creates a coordinator.
 func openCoordinator() (*coord.Coordinator, *repo.Repo, error) {
-	r, err := repo.Open(".")
+	r, err := openRepo(".")
 	if err != nil {
 		return nil, nil, fmt.Errorf("open repo: %w", err)
 	}
@@ -249,7 +249,7 @@ func newCoordAgentsCmd(jsonFlag *bool) *cobra.Command {
 				}
 				if cfg.Workspaces != nil {
 					for wsName, wsPath := range cfg.Workspaces {
-						r, err := repo.Open(wsPath)
+						r, err := openRepo(wsPath)
 						if err != nil {
 							continue // skip non-graft workspaces
 						}

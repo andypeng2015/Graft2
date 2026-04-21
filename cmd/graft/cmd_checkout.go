@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 
-	"github.com/odvcencio/graft/pkg/repo"
 	"github.com/spf13/cobra"
 )
 
@@ -17,7 +16,7 @@ func newCheckoutCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			target := args[0]
 
-			r, err := repo.Open(".")
+			r, err := openRepo(".")
 			if err != nil {
 				return err
 			}

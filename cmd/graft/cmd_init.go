@@ -55,7 +55,7 @@ func newInitCmd() *cobra.Command {
 			// Then optionally create .git/ and bridge
 			if !noGit {
 				_ = repo.RunExternalProcess(repo.ExternalProcessSpec{
-					Dir: abs, Path: "git", Args: []string{"init"},
+					Dir: abs, Path: "git", Args: []string{"init", "-b", "main"},
 					Stdout: io.Discard, Stderr: io.Discard, Label: "init-git",
 				})
 				if gitbridge.DetectGitRepo(abs) {

@@ -34,7 +34,7 @@ func newModuleListCmd() *cobra.Command {
 		Short: "List configured modules",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			r, err := repo.Open(".")
+			r, err := openRepo(".")
 			if err != nil {
 				return err
 			}
@@ -69,7 +69,7 @@ func newModuleStatusCmd() *cobra.Command {
 		Short: "Show module status",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			r, err := repo.Open(".")
+			r, err := openRepo(".")
 			if err != nil {
 				return err
 			}
@@ -137,7 +137,7 @@ func newModuleAddCmd() *cobra.Command {
 				track = "main"
 			}
 
-			r, err := repo.Open(".")
+			r, err := openRepo(".")
 			if err != nil {
 				return err
 			}
@@ -179,7 +179,7 @@ func newModuleRmCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
 
-			r, err := repo.Open(".")
+			r, err := openRepo(".")
 			if err != nil {
 				return err
 			}
@@ -213,7 +213,7 @@ func newModuleSyncCmd() *cobra.Command {
 		Short: "Sync module working trees from lock file",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			r, err := repo.Open(".")
+			r, err := openRepo(".")
 			if err != nil {
 				return err
 			}
@@ -236,7 +236,7 @@ func newModuleUpdateCmd() *cobra.Command {
 		Short: "Fetch latest objects for modules",
 		Args:  cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			r, err := repo.Open(".")
+			r, err := openRepo(".")
 			if err != nil {
 				return err
 			}
@@ -353,7 +353,7 @@ see what changed and what callers may be affected before syncing.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
 
-			r, err := repo.Open(".")
+			r, err := openRepo(".")
 			if err != nil {
 				return err
 			}

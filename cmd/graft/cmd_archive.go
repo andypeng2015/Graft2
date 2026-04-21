@@ -16,7 +16,7 @@ func newArchiveCmd() *cobra.Command {
 		Short: "Create an archive of files from a commit",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			r, err := repo.Open(".")
+			r, err := openRepo(".")
 			if err != nil {
 				return err
 			}

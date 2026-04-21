@@ -174,7 +174,7 @@ func newRepairResyncGitCmd() *cobra.Command {
 		Long:  "Brings the colocated .git/ repository in sync with graft by staging all files and creating a git commit matching graft's HEAD.",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			r, err := repo.Open(".")
+			r, err := openRepo(".")
 			if err != nil {
 				return err
 			}

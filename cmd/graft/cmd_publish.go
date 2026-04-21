@@ -10,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/odvcencio/graft/pkg/repo"
 	"github.com/spf13/cobra"
 )
 
@@ -40,7 +39,7 @@ func newPublishCmd() *cobra.Command {
 		Short: "Create a remote repo on Orchard, set origin, and push current branch",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			r, err := repo.Open(".")
+			r, err := openRepo(".")
 			if err != nil {
 				return err
 			}

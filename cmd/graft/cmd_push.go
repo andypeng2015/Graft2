@@ -21,7 +21,7 @@ func newPushCmd() *cobra.Command {
 		Short: "Push a local branch or ref to a remote",
 		Args:  cobra.MaximumNArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			r, err := repo.Open(".")
+			r, err := openRepo(".")
 			if err != nil {
 				return err
 			}

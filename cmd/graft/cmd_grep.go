@@ -73,7 +73,7 @@ ignored in structural mode.`,
 				}
 			}
 
-			r, err := repo.Open(".")
+			r, err := openRepo(".")
 			if err != nil {
 				return err
 			}

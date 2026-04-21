@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"github.com/odvcencio/graft/pkg/object"
-	"github.com/odvcencio/graft/pkg/repo"
 	"github.com/spf13/cobra"
 )
 
@@ -23,7 +22,7 @@ func newTagCmd() *cobra.Command {
 		Short: "List, create, or delete tags",
 		Args:  cobra.MaximumNArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			r, err := repo.Open(".")
+			r, err := openRepo(".")
 			if err != nil {
 				return err
 			}

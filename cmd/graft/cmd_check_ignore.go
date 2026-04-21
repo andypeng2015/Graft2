@@ -41,7 +41,7 @@ func newCheckIgnoreCmd() *cobra.Command {
 				return fmt.Errorf("--graft-only and --git-only cannot be used together")
 			}
 
-			r, err := repo.Open(".")
+			r, err := openRepo(".")
 			if err != nil {
 				return err
 			}

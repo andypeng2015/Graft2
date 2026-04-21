@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 
-	"github.com/odvcencio/graft/pkg/repo"
 	"github.com/spf13/cobra"
 )
 
@@ -27,7 +26,7 @@ func newSparseCheckoutSetCmd() *cobra.Command {
 		Short: "Set sparse checkout patterns (replaces existing)",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			r, err := repo.Open(".")
+			r, err := openRepo(".")
 			if err != nil {
 				return err
 			}
@@ -48,7 +47,7 @@ func newSparseCheckoutAddCmd() *cobra.Command {
 		Short: "Add patterns to sparse checkout",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			r, err := repo.Open(".")
+			r, err := openRepo(".")
 			if err != nil {
 				return err
 			}
@@ -69,7 +68,7 @@ func newSparseCheckoutListCmd() *cobra.Command {
 		Short: "List current sparse checkout patterns",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			r, err := repo.Open(".")
+			r, err := openRepo(".")
 			if err != nil {
 				return err
 			}
@@ -94,7 +93,7 @@ func newSparseCheckoutDisableCmd() *cobra.Command {
 		Short: "Disable sparse checkout and materialize all files",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			r, err := repo.Open(".")
+			r, err := openRepo(".")
 			if err != nil {
 				return err
 			}

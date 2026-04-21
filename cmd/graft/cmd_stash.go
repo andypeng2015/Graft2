@@ -5,7 +5,6 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/odvcencio/graft/pkg/repo"
 	"github.com/spf13/cobra"
 )
 
@@ -36,7 +35,7 @@ func newStashPushCmd() *cobra.Command {
 }
 
 func stashPushRun(cmd *cobra.Command, args []string) error {
-	r, err := repo.Open(".")
+	r, err := openRepo(".")
 	if err != nil {
 		return err
 	}
@@ -68,7 +67,7 @@ func newStashPopCmd() *cobra.Command {
 				return err
 			}
 
-			r, err := repo.Open(".")
+			r, err := openRepo(".")
 			if err != nil {
 				return err
 			}
@@ -108,7 +107,7 @@ func newStashApplyCmd() *cobra.Command {
 				return err
 			}
 
-			r, err := repo.Open(".")
+			r, err := openRepo(".")
 			if err != nil {
 				return err
 			}
@@ -139,7 +138,7 @@ func newStashListCmd() *cobra.Command {
 		Short: "List all stash entries",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			r, err := repo.Open(".")
+			r, err := openRepo(".")
 			if err != nil {
 				return err
 			}
@@ -170,7 +169,7 @@ func newStashDropCmd() *cobra.Command {
 				return err
 			}
 
-			r, err := repo.Open(".")
+			r, err := openRepo(".")
 			if err != nil {
 				return err
 			}
@@ -198,7 +197,7 @@ func newStashShowCmd() *cobra.Command {
 				return err
 			}
 
-			r, err := repo.Open(".")
+			r, err := openRepo(".")
 			if err != nil {
 				return err
 			}

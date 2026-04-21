@@ -8,7 +8,6 @@ import (
 	"text/tabwriter"
 
 	"github.com/odvcencio/graft/pkg/coord"
-	"github.com/odvcencio/graft/pkg/repo"
 	"github.com/odvcencio/graft/pkg/userconfig"
 	"github.com/spf13/cobra"
 )
@@ -26,7 +25,7 @@ func iterateWorkspaces(fn func(name string, c *coord.Coordinator) error) error {
 
 	if cfg.Workspaces != nil {
 		for name, wsPath := range cfg.Workspaces {
-			r, err := repo.Open(wsPath)
+			r, err := openRepo(wsPath)
 			if err != nil {
 				continue // skip non-graft workspaces
 			}

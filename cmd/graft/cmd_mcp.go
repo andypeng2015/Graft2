@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"github.com/odvcencio/graft/pkg/coord"
-	"github.com/odvcencio/graft/pkg/repo"
 	"github.com/odvcencio/graft/pkg/userconfig"
 	"github.com/spf13/cobra"
 )
@@ -253,7 +252,7 @@ func (s *mcpServer) handleRequest(request mcpRPCRequest) (any, *mcpRPCError) {
 
 		// Lazily initialize the activity accumulator when an active agent is detected.
 		if s.activity == nil {
-			if r, err := repo.Open("."); err == nil {
+			if r, err := openRepo("."); err == nil {
 				if activeID := readActiveAgentID(r); activeID != "" {
 					agentName := activeID
 					if c := coord.New(r, coord.DefaultConfig); c != nil {
@@ -288,7 +287,7 @@ func (s *mcpServer) handleRequest(request mcpRPCRequest) (any, *mcpRPCError) {
 
 		// Publish activity digest if accumulator is ready.
 		if s.activity != nil && s.activity.shouldPublish() {
-			if r, err := repo.Open("."); err == nil {
+			if r, err := openRepo("."); err == nil {
 				c := coord.New(r, coord.DefaultConfig)
 				c.AgentID = s.activity.agentID
 				digest := s.activity.buildDigest()
@@ -676,7 +675,7 @@ func mcpArgInt(args map[string]any, key string) int {
 // --- Coord summary for _meta ---
 
 func mcpBuildCoordSummary(activity *mcpActivityAccumulator) map[string]any {
-	r, err := repo.Open(".")
+	r, err := openRepo(".")
 	if err != nil {
 		return nil
 	}
@@ -738,7 +737,7 @@ func mcpToolWorkon(args map[string]any) (any, error) {
 		return nil, fmt.Errorf("name is required")
 	}
 
-	r, err := repo.Open(".")
+	r, err := openRepo(".")
 	if err != nil {
 		return nil, fmt.Errorf("open repo: %w", err)
 	}
@@ -809,7 +808,7 @@ func mcpToolWorkon(args map[string]any) (any, error) {
 }
 
 func mcpToolWorkonDone(_ map[string]any) (any, error) {
-	r, err := repo.Open(".")
+	r, err := openRepo(".")
 	if err != nil {
 		return nil, fmt.Errorf("open repo: %w", err)
 	}

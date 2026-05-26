@@ -3,7 +3,7 @@ package merge
 import (
 	"fmt"
 
-	"github.com/odvcencio/graft/pkg/entity"
+	"m31labs.dev/graft/pkg/entity"
 )
 
 // ResolvedEntity wraps an entity with its merge resolution.

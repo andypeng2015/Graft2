@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/odvcencio/graft/pkg/object"
+	"m31labs.dev/graft/pkg/object"
 )
 
 // ModuleSync reads .graftmodules and .graftmodules.lock, then materializes

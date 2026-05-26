@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/odvcencio/graft/pkg/merge"
+	"m31labs.dev/graft/pkg/merge"
 )
 
 // ThreeWayFileResult holds the outcome of a three-way merge for a single file.

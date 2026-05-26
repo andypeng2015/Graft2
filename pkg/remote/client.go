@@ -14,8 +14,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/odvcencio/graft/pkg/object"
-	"github.com/odvcencio/graft/pkg/userconfig"
+	"m31labs.dev/graft/pkg/object"
+	"m31labs.dev/graft/pkg/userconfig"
 )
 
 // Endpoint identifies a Graft protocol repository endpoint.

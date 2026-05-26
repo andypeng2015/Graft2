@@ -4,7 +4,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/odvcencio/graft/pkg/coord"
+	"m31labs.dev/graft/pkg/coord"
 )
 
 const digestInterval = 30 * time.Second

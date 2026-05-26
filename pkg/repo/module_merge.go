@@ -3,7 +3,7 @@ package repo
 import (
 	"sort"
 
-	"github.com/odvcencio/graft/pkg/object"
+	"m31labs.dev/graft/pkg/object"
 )
 
 // ModuleMergeResult holds the outcome of a three-way merge on module entries.

@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/odvcencio/graft/pkg/object"
+	"m31labs.dev/graft/pkg/object"
 )
 
 // TestCommitGraph_WriteAndRead writes a commit graph file and reads it back,

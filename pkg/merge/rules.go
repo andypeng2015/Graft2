@@ -1,6 +1,6 @@
 package merge
 
-import "github.com/odvcencio/graft/pkg/entity"
+import "m31labs.dev/graft/pkg/entity"
 
 // DiagSeverity indicates the severity of a merge rule diagnostic.
 type DiagSeverity int

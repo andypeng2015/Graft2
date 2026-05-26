@@ -8,8 +8,8 @@ import (
 
 	"github.com/odvcencio/gotreesitter/grammars"
 	tsgrep "github.com/odvcencio/gotreesitter/grep"
-	"github.com/odvcencio/graft/pkg/entity"
-	"github.com/odvcencio/graft/pkg/repo"
+	"m31labs.dev/graft/pkg/entity"
+	"m31labs.dev/graft/pkg/repo"
 )
 
 // mcpGrepToolDefs returns tool definitions for structural grep operations.

@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/odvcencio/graft/pkg/object"
+	"m31labs.dev/graft/pkg/object"
 )
 
 func commitMainGo(t *testing.T, r *Repo, dir, content, message string) object.Hash {

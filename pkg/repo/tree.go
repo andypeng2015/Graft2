@@ -8,7 +8,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/odvcencio/graft/pkg/object"
+	"m31labs.dev/graft/pkg/object"
 )
 
 // DefaultSidecarDirs lists directories whose contents are injected into every

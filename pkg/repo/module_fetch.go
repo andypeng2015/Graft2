@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/odvcencio/graft/pkg/object"
-	"github.com/odvcencio/graft/pkg/remote"
+	"m31labs.dev/graft/pkg/object"
+	"m31labs.dev/graft/pkg/remote"
 )
 
 // ModuleFetchResult describes the outcome of a single module fetch-and-update.

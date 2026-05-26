@@ -2,7 +2,7 @@
 // minimal edit sequences between text files.
 package diff
 
-import "github.com/odvcencio/graft/pkg/entity"
+import "m31labs.dev/graft/pkg/entity"
 
 // ChangeType classifies what happened to an entity between two file revisions.
 type ChangeType int

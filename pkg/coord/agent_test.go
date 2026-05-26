@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/odvcencio/graft/pkg/repo"
+	"m31labs.dev/graft/pkg/repo"
 )
 
 func newTestCoordinator(t *testing.T) *Coordinator {

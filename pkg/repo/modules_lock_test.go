@@ -3,7 +3,7 @@ package repo
 import (
 	"testing"
 
-	"github.com/odvcencio/graft/pkg/object"
+	"m31labs.dev/graft/pkg/object"
 )
 
 func TestModuleLock_ReadWriteRoundTrip(t *testing.T) {

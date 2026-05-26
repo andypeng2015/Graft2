@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/odvcencio/graft/pkg/repo"
+	"m31labs.dev/graft/pkg/repo"
 )
 
 func TestStatusCmd_Short(t *testing.T) {

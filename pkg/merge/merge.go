@@ -8,8 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/odvcencio/graft/pkg/diff3"
-	"github.com/odvcencio/graft/pkg/entity"
+	"m31labs.dev/graft/pkg/diff3"
+	"m31labs.dev/graft/pkg/entity"
 )
 
 // MergeStats tracks counts of entity dispositions during a structural merge.

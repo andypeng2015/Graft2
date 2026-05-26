@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/odvcencio/graft/pkg/coord"
-	"github.com/odvcencio/graft/pkg/repo"
+	"m31labs.dev/graft/pkg/coord"
+	"m31labs.dev/graft/pkg/repo"
 	"github.com/spf13/cobra"
 )
 

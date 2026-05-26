@@ -3,7 +3,7 @@ package merge
 import (
 	"testing"
 
-	"github.com/odvcencio/graft/pkg/entity"
+	"m31labs.dev/graft/pkg/entity"
 )
 
 // makeEntity creates an Entity with the given kind, name, and body, then computes its hash.

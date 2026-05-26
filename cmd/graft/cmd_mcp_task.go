@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/odvcencio/graft/pkg/coord"
+	"m31labs.dev/graft/pkg/coord"
 )
 
 // mcpTaskToolDefs returns tool definitions for task management.

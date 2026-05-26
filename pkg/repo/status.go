@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/odvcencio/graft/pkg/object"
+	"m31labs.dev/graft/pkg/object"
 )
 
 // FileStatus represents the state of a file in the working tree or index.

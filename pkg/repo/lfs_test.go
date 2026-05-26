@@ -12,7 +12,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/odvcencio/graft/pkg/remote"
+	"m31labs.dev/graft/pkg/remote"
 )
 
 // Test 1: Round-trip pointer format — write then parse.

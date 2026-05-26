@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/odvcencio/graft/pkg/object"
+	"m31labs.dev/graft/pkg/object"
 )
 
 // CommitDiffFile describes a single file that differs between two commits.

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"text/tabwriter"
 
-	"github.com/odvcencio/graft/pkg/coord"
+	"m31labs.dev/graft/pkg/coord"
 	"github.com/spf13/cobra"
 )
 

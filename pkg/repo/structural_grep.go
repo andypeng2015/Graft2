@@ -11,8 +11,8 @@ import (
 
 	"github.com/odvcencio/gotreesitter/grammars"
 	tsgrep "github.com/odvcencio/gotreesitter/grep"
-	"github.com/odvcencio/graft/pkg/entity"
-	"github.com/odvcencio/graft/pkg/object"
+	"m31labs.dev/graft/pkg/entity"
+	"m31labs.dev/graft/pkg/object"
 )
 
 // StructuralGrepOptions configures a structural (AST-aware) code search.

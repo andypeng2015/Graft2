@@ -5,8 +5,8 @@ import (
 	"io"
 	"testing"
 
-	"github.com/odvcencio/graft/pkg/coord"
-	"github.com/odvcencio/graft/pkg/repo"
+	"m31labs.dev/graft/pkg/coord"
+	"m31labs.dev/graft/pkg/repo"
 )
 
 func TestCoordNoteCreateAndList_JSON(t *testing.T) {

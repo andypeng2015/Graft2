@@ -1,6 +1,6 @@
 package diff
 
-import "github.com/odvcencio/graft/pkg/entity"
+import "m31labs.dev/graft/pkg/entity"
 
 // ReviewComment anchors a review comment on an entity identity key rather than
 // a line number. This allows comments to survive rebases as long as the entity

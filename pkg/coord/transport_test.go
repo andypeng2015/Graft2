@@ -3,7 +3,7 @@ package coord
 import (
 	"testing"
 
-	"github.com/odvcencio/graft/pkg/repo"
+	"m31labs.dev/graft/pkg/repo"
 )
 
 func TestLocalPeerTransport_ListAgents(t *testing.T) {

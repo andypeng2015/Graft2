@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/odvcencio/graft/pkg/object"
-	"github.com/odvcencio/graft/pkg/repo"
+	"m31labs.dev/graft/pkg/object"
+	"m31labs.dev/graft/pkg/repo"
 )
 
 func TestVerifyCmdVerifiesPackedObjectsWhenLooseMissing(t *testing.T) {

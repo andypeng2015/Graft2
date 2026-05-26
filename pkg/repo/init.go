@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/odvcencio/graft/pkg/object"
+	"m31labs.dev/graft/pkg/object"
 )
 
 var ErrRefCASMismatch = errors.New("ref compare-and-swap mismatch")

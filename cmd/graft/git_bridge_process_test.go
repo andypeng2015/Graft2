@@ -9,8 +9,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/odvcencio/graft/pkg/coordd"
-	"github.com/odvcencio/graft/pkg/repo"
+	"m31labs.dev/graft/pkg/coordd"
+	"m31labs.dev/graft/pkg/repo"
 )
 
 func TestRunGitStreaming_BlockedByCoorddGuard(t *testing.T) {

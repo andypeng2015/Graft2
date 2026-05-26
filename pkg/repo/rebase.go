@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/odvcencio/graft/pkg/object"
+	"m31labs.dev/graft/pkg/object"
 )
 
 // ErrRebaseConflict is returned when a cherry-pick during rebase produces a conflict.

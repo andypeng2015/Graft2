@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	repopkg "github.com/odvcencio/graft/pkg/repo"
+	repopkg "m31labs.dev/graft/pkg/repo"
 )
 
 // AgentInfo describes a registered coordination agent.

@@ -11,7 +11,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/odvcencio/graft/pkg/object"
+	"m31labs.dev/graft/pkg/object"
 )
 
 const (

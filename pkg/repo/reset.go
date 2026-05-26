@@ -7,7 +7,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/odvcencio/graft/pkg/object"
+	"m31labs.dev/graft/pkg/object"
 )
 
 // ResetMode controls how much state a commit-level reset modifies.

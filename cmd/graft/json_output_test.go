@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/odvcencio/graft/pkg/entity"
-	"github.com/odvcencio/graft/pkg/repo"
+	"m31labs.dev/graft/pkg/entity"
+	"m31labs.dev/graft/pkg/repo"
 )
 
 // TestWriteJSON verifies writeJSON produces pretty-printed JSON with the correct structure.

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/odvcencio/graft/pkg/repo"
+	"m31labs.dev/graft/pkg/repo"
 )
 
 func TestDetectGitRepo(t *testing.T) {

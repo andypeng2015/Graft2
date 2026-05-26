@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/odvcencio/graft/pkg/object"
-	"github.com/odvcencio/graft/pkg/remote"
+	"m31labs.dev/graft/pkg/object"
+	"m31labs.dev/graft/pkg/remote"
 )
 
 func TestShallowState_ReadsShallowFile(t *testing.T) {

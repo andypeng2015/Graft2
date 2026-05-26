@@ -3,7 +3,7 @@ package repo
 import (
 	"os"
 
-	"github.com/odvcencio/graft/pkg/object"
+	"m31labs.dev/graft/pkg/object"
 )
 
 func modeFromFileInfo(info os.FileInfo) string {

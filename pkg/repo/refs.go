@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/odvcencio/graft/pkg/object"
+	"m31labs.dev/graft/pkg/object"
 )
 
 // ancestorOp represents a single step in a revision suffix chain.

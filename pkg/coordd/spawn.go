@@ -16,8 +16,8 @@ import (
 	"github.com/odvcencio/arbiter/govern"
 	"github.com/odvcencio/arbiter/overrides"
 	"github.com/odvcencio/arbiter/vm"
-	"github.com/odvcencio/graft/pkg/coord"
-	"github.com/odvcencio/graft/pkg/repo"
+	"m31labs.dev/graft/pkg/coord"
+	"m31labs.dev/graft/pkg/repo"
 )
 
 //go:embed default_spawn_policy.arb

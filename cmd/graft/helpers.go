@@ -6,9 +6,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/odvcencio/graft/pkg/gitbridge"
-	"github.com/odvcencio/graft/pkg/object"
-	"github.com/odvcencio/graft/pkg/repo"
+	"m31labs.dev/graft/pkg/gitbridge"
+	"m31labs.dev/graft/pkg/object"
+	"m31labs.dev/graft/pkg/repo"
 )
 
 // shortHash delegates to repo.ShortHash for display purposes.

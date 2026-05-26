@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/odvcencio/arbiter"
-	"github.com/odvcencio/graft/pkg/object"
+	"m31labs.dev/graft/pkg/object"
 )
 
 //go:embed default_effect_policy.arb

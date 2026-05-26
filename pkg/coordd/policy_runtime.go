@@ -12,7 +12,7 @@ import (
 	"github.com/odvcencio/arbiter/govern"
 	"github.com/odvcencio/arbiter/overrides"
 	"github.com/odvcencio/arbiter/vm"
-	"github.com/odvcencio/graft/pkg/repo"
+	"m31labs.dev/graft/pkg/repo"
 )
 
 const (

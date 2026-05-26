@@ -15,8 +15,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/odvcencio/graft/pkg/entity"
-	"github.com/odvcencio/graft/pkg/object"
+	"m31labs.dev/graft/pkg/entity"
+	"m31labs.dev/graft/pkg/object"
 
 	"github.com/odvcencio/gotreesitter/grammars"
 )

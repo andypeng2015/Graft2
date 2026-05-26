@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/odvcencio/graft/pkg/coord"
-	"github.com/odvcencio/graft/pkg/coordd"
-	"github.com/odvcencio/graft/pkg/repo"
+	"m31labs.dev/graft/pkg/coord"
+	"m31labs.dev/graft/pkg/coordd"
+	"m31labs.dev/graft/pkg/repo"
 )
 
 type mcpSpawnTestResult struct {

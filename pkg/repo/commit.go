@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/odvcencio/graft/pkg/object"
-	"github.com/odvcencio/graft/pkg/userconfig"
+	"m31labs.dev/graft/pkg/object"
+	"m31labs.dev/graft/pkg/userconfig"
 )
 
 // formatAuthor returns "Name <email>" if both are set, just name if only

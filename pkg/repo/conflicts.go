@@ -7,7 +7,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/odvcencio/graft/pkg/merge"
+	"m31labs.dev/graft/pkg/merge"
 )
 
 // ConflictEntry describes a single entity-level conflict within a file.

@@ -9,7 +9,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/odvcencio/graft/pkg/object"
+	"m31labs.dev/graft/pkg/object"
 )
 
 func TestUpdateRefCAS_ConcurrentSingleWinner(t *testing.T) {

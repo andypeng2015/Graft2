@@ -6,8 +6,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/odvcencio/graft/pkg/object"
-	"github.com/odvcencio/graft/pkg/remote"
+	"m31labs.dev/graft/pkg/object"
+	"m31labs.dev/graft/pkg/remote"
 )
 
 // RefUpdate describes how a single reference changed during a fetch.

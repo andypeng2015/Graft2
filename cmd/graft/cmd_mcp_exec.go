@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/odvcencio/graft/pkg/coordd"
+	"m31labs.dev/graft/pkg/coordd"
 )
 
 func mcpExecToolDefs() []mcpTool {

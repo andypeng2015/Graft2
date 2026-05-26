@@ -14,7 +14,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/odvcencio/graft/pkg/userconfig"
+	"m31labs.dev/graft/pkg/userconfig"
 	"github.com/spf13/cobra"
 	"golang.org/x/crypto/ssh"
 )

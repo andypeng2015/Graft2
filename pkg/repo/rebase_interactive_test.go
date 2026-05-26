@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/odvcencio/graft/pkg/object"
+	"m31labs.dev/graft/pkg/object"
 )
 
 // TestParseTodoList_AllActions verifies that parseTodoList correctly parses

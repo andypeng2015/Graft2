@@ -3,7 +3,7 @@ package coord
 import (
 	"fmt"
 
-	"github.com/odvcencio/graft/pkg/repo"
+	"m31labs.dev/graft/pkg/repo"
 )
 
 // PeerTransport abstracts reading coordination state from a peer workspace.

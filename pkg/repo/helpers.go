@@ -3,7 +3,7 @@ package repo
 import (
 	"strings"
 
-	"github.com/odvcencio/graft/pkg/object"
+	"m31labs.dev/graft/pkg/object"
 )
 
 // ShortHash returns the first 8 characters of a hash for display purposes.

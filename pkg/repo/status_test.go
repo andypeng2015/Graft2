@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/odvcencio/graft/pkg/object"
+	"m31labs.dev/graft/pkg/object"
 )
 
 // Test 1: Clean repo — add file, then Status shows it as staged new

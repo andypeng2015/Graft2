@@ -8,7 +8,7 @@ import (
 	"runtime"
 	"sync"
 
-	"github.com/odvcencio/graft/pkg/object"
+	"m31labs.dev/graft/pkg/object"
 )
 
 // objectTypeToPackType maps Graft object types to pack object types.

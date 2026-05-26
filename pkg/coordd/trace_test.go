@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/odvcencio/graft/pkg/repo"
+	"m31labs.dev/graft/pkg/repo"
 )
 
 func TestExecuteGuarded_SavesExecTraceAndLoadSpawnTrace(t *testing.T) {

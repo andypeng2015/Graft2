@@ -5,8 +5,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/odvcencio/graft/pkg/coord"
-	"github.com/odvcencio/graft/pkg/repo"
+	"m31labs.dev/graft/pkg/coord"
+	"m31labs.dev/graft/pkg/repo"
 )
 
 // ActionPolicyCoord holds coordination context injected into every

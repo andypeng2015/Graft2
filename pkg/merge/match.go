@@ -3,7 +3,7 @@ package merge
 import (
 	"fmt"
 
-	"github.com/odvcencio/graft/pkg/entity"
+	"m31labs.dev/graft/pkg/entity"
 )
 
 // Disposition describes the merge status of a matched entity.

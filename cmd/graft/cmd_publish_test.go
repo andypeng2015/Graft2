@@ -3,7 +3,7 @@ package main
 import (
 	"testing"
 
-	"github.com/odvcencio/graft/pkg/userconfig"
+	"m31labs.dev/graft/pkg/userconfig"
 )
 
 func TestResolvePublishTarget(t *testing.T) {

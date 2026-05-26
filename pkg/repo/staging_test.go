@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/odvcencio/graft/pkg/object"
+	"m31labs.dev/graft/pkg/object"
 )
 
 // Test 1: Add a Go file — blob + entity list stored, both hashes non-empty.

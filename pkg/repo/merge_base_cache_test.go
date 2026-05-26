@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/odvcencio/graft/pkg/object"
+	"m31labs.dev/graft/pkg/object"
 )
 
 func TestInvalidate_ClearsMergeBasesPreservesCommitsAndGenerations(t *testing.T) {

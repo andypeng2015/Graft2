@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/odvcencio/graft/pkg/object"
+	"m31labs.dev/graft/pkg/object"
 )
 
 const zeroHash = "0000000000000000000000000000000000000000000000000000000000000000"

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/odvcencio/graft/pkg/object"
+	"m31labs.dev/graft/pkg/object"
 )
 
 // TestCherryPick_AppliesCleanly verifies that cherry-pick applies a commit's

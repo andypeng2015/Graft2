@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/odvcencio/graft/pkg/object"
+	"m31labs.dev/graft/pkg/object"
 )
 
 // bisectTestRepo creates a temp repo with n linear commits (c0 .. c{n-1}).

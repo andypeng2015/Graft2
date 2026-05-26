@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"github.com/odvcencio/arbiter/overrides"
-	"github.com/odvcencio/graft/pkg/coord"
-	"github.com/odvcencio/graft/pkg/repo"
+	"m31labs.dev/graft/pkg/coord"
+	"m31labs.dev/graft/pkg/repo"
 )
 
 func TestEvaluateActionPolicy_DestructiveRMBlocked(t *testing.T) {

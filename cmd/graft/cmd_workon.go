@@ -8,9 +8,9 @@ import (
 	"path/filepath"
 	"syscall"
 
-	"github.com/odvcencio/graft/pkg/coord"
-	"github.com/odvcencio/graft/pkg/repo"
-	"github.com/odvcencio/graft/pkg/userconfig"
+	"m31labs.dev/graft/pkg/coord"
+	"m31labs.dev/graft/pkg/repo"
+	"m31labs.dev/graft/pkg/userconfig"
 	"github.com/spf13/cobra"
 )
 

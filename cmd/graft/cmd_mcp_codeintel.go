@@ -7,8 +7,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/odvcencio/graft/pkg/coord"
-	"github.com/odvcencio/graft/pkg/entity"
+	"m31labs.dev/graft/pkg/coord"
+	"m31labs.dev/graft/pkg/entity"
 )
 
 // mcpCodeintelToolDefs returns tool definitions for code intelligence.

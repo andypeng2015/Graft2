@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/odvcencio/graft/pkg/repo"
+	"m31labs.dev/graft/pkg/repo"
 )
 
 func runGitCaptureWithLabel(ctx context.Context, dir, label string, args ...string) ([]byte, error) {

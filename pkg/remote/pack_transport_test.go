@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/odvcencio/graft/pkg/object"
+	"m31labs.dev/graft/pkg/object"
 )
 
 func TestPackTransportRoundTrip(t *testing.T) {

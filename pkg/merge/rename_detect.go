@@ -3,8 +3,8 @@ package merge
 import (
 	"sort"
 
-	"github.com/odvcencio/graft/pkg/diff3"
-	"github.com/odvcencio/graft/pkg/entity"
+	"m31labs.dev/graft/pkg/diff3"
+	"m31labs.dev/graft/pkg/entity"
 )
 
 // RenameCandidate records a detected rename from OldKey to NewKey with a

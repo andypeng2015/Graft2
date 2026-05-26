@@ -8,7 +8,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/odvcencio/graft/pkg/object"
+	"m31labs.dev/graft/pkg/object"
 )
 
 // GitHash is a variable-length git object hash (SHA-1: 20 bytes, SHA-256: 32 bytes).

@@ -4,8 +4,8 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/odvcencio/graft/pkg/coord"
-	"github.com/odvcencio/graft/pkg/repo"
+	"m31labs.dev/graft/pkg/coord"
+	"m31labs.dev/graft/pkg/repo"
 )
 
 func TestHandleCoordAddClaim_ForceTransfersClaim(t *testing.T) {

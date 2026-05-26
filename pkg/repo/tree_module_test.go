@@ -3,7 +3,7 @@ package repo
 import (
 	"testing"
 
-	"github.com/odvcencio/graft/pkg/object"
+	"m31labs.dev/graft/pkg/object"
 )
 
 func mustWriteBlob(t *testing.T, store *object.Store, content string) object.Hash {

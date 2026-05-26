@@ -6,8 +6,8 @@ package repo
 import (
 	"sync"
 
-	"github.com/odvcencio/graft/pkg/object"
-	"github.com/odvcencio/graft/pkg/remote"
+	"m31labs.dev/graft/pkg/object"
+	"m31labs.dev/graft/pkg/remote"
 )
 
 // Repo represents an opened Graft repository.

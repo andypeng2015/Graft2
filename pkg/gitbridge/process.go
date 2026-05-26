@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/odvcencio/graft/pkg/repo"
+	"m31labs.dev/graft/pkg/repo"
 )
 
 func runGitCapture(rootDir, label string, args ...string) ([]byte, error) {

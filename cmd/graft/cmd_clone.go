@@ -7,9 +7,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/odvcencio/graft/pkg/object"
-	"github.com/odvcencio/graft/pkg/remote"
-	"github.com/odvcencio/graft/pkg/repo"
+	"m31labs.dev/graft/pkg/object"
+	"m31labs.dev/graft/pkg/remote"
+	"m31labs.dev/graft/pkg/repo"
 	"github.com/spf13/cobra"
 )
 

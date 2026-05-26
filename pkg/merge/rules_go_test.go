@@ -3,7 +3,7 @@ package merge
 import (
 	"testing"
 
-	"github.com/odvcencio/graft/pkg/entity"
+	"m31labs.dev/graft/pkg/entity"
 )
 
 // mergeAndRunRule is a test helper that runs MergeFiles, extracts entities,

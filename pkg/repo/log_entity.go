@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"sort"
 
-	"github.com/odvcencio/graft/pkg/entity"
-	"github.com/odvcencio/graft/pkg/object"
+	"m31labs.dev/graft/pkg/entity"
+	"m31labs.dev/graft/pkg/object"
 )
 
 // LogEntry carries commit metadata with its hash for log output.

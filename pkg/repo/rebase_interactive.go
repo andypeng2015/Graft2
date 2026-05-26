@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/odvcencio/graft/pkg/object"
+	"m31labs.dev/graft/pkg/object"
 )
 
 // TodoAction represents an action in an interactive rebase todo list.

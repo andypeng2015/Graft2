@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/odvcencio/graft/pkg/merge"
-	"github.com/odvcencio/graft/pkg/object"
+	"m31labs.dev/graft/pkg/merge"
+	"m31labs.dev/graft/pkg/object"
 )
 
 // FileMergeReport records the merge outcome for a single file.

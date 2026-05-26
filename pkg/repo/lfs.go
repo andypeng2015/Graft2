@@ -12,8 +12,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/odvcencio/graft/pkg/object"
-	"github.com/odvcencio/graft/pkg/remote"
+	"m31labs.dev/graft/pkg/object"
+	"m31labs.dev/graft/pkg/remote"
 )
 
 const lfsPointerVersion = "graft-lfs/1"

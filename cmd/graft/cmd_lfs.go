@@ -8,7 +8,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/odvcencio/graft/pkg/remote"
+	"m31labs.dev/graft/pkg/remote"
 	"github.com/spf13/cobra"
 )
 

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/odvcencio/graft/pkg/entity"
+	"m31labs.dev/graft/pkg/entity"
 )
 
 func TestReconstructAllClean(t *testing.T) {

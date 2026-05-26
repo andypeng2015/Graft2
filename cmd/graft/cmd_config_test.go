@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/odvcencio/graft/pkg/userconfig"
+	"m31labs.dev/graft/pkg/userconfig"
 )
 
 func TestIntegration_ConfigSetGetRepoLevel(t *testing.T) {

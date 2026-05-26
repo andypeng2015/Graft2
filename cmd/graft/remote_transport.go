@@ -6,7 +6,7 @@ import (
 	"path"
 	"strings"
 
-	"github.com/odvcencio/graft/pkg/remote"
+	"m31labs.dev/graft/pkg/remote"
 )
 
 type remoteTransportKind string

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/odvcencio/graft/pkg/object"
+	"m31labs.dev/graft/pkg/object"
 )
 
 // TestReflog_EntityTracking creates a repo, adds a Go file with functions,

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/odvcencio/graft/pkg/object"
+	"m31labs.dev/graft/pkg/object"
 )
 
 // writeTestCommit is a helper that writes a commit to the object store with

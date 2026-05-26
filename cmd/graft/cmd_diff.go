@@ -9,11 +9,11 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/odvcencio/graft/pkg/coord"
-	"github.com/odvcencio/graft/pkg/diff"
-	"github.com/odvcencio/graft/pkg/diff3"
-	"github.com/odvcencio/graft/pkg/object"
-	"github.com/odvcencio/graft/pkg/repo"
+	"m31labs.dev/graft/pkg/coord"
+	"m31labs.dev/graft/pkg/diff"
+	"m31labs.dev/graft/pkg/diff3"
+	"m31labs.dev/graft/pkg/object"
+	"m31labs.dev/graft/pkg/repo"
 	"github.com/spf13/cobra"
 )
 

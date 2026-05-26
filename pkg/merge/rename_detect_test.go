@@ -3,7 +3,7 @@ package merge
 import (
 	"testing"
 
-	"github.com/odvcencio/graft/pkg/entity"
+	"m31labs.dev/graft/pkg/entity"
 )
 
 // makeRenameEntity creates a declaration entity with explicit name, declKind, and body.

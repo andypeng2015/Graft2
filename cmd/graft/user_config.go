@@ -4,7 +4,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/odvcencio/graft/pkg/userconfig"
+	"m31labs.dev/graft/pkg/userconfig"
 )
 
 func loadUserConfig() *userconfig.Config {

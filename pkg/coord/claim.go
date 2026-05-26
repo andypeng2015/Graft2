@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	graftrepo "github.com/odvcencio/graft/pkg/repo"
+	graftrepo "m31labs.dev/graft/pkg/repo"
 )
 
 const (

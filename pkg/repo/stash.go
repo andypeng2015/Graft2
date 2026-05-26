@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/odvcencio/graft/pkg/diff3"
-	"github.com/odvcencio/graft/pkg/object"
+	"m31labs.dev/graft/pkg/diff3"
+	"m31labs.dev/graft/pkg/object"
 )
 
 // StashEntry represents a single entry in the stash stack.

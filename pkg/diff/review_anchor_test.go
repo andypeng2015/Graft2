@@ -3,7 +3,7 @@ package diff
 import (
 	"testing"
 
-	"github.com/odvcencio/graft/pkg/entity"
+	"m31labs.dev/graft/pkg/entity"
 )
 
 // TestResolveCommentPosition_Found verifies that a comment anchored to an

@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/odvcencio/graft/pkg/object"
+	"m31labs.dev/graft/pkg/object"
 )
 
 // FeedEntry is the persisted feed blob -- a linked list via Parent hash.

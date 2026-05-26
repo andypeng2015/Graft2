@@ -9,7 +9,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/odvcencio/arbiter"
+	"m31labs.dev/arbiter"
 )
 
 //go:embed default_claim_policy.arb

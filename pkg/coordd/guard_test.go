@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/odvcencio/arbiter/overrides"
+	"m31labs.dev/arbiter/overrides"
 	"m31labs.dev/graft/pkg/coord"
 	"m31labs.dev/graft/pkg/repo"
 )

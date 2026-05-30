@@ -5,6 +5,8 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  schedule:
+    - cron: '0 6 * * 1'  # Weekly, Monday 06:00 UTC
   workflow_dispatch:
 
 permissions:
@@ -35,10 +37,31 @@ jobs:
       - name: Run tests
         run: go test ./...
 
-      # Race detector disabled: data races in sparse checkout and archive
-      # need upstream fixes. Re-enable after those land.
-      # - name: Run tests with race detector
-      #   run: go test -race ./...
+  race:
+    name: Race detector
+    # Race detection roughly triples test time, so run it weekly and on demand
+    # rather than on every push/PR to conserve CI minutes. The sparse/archive
+    # data races that originally forced this off were resolved by the
+    # gotreesitter/canopy upgrades (verified race-clean locally).
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
+
+      - name: Configure git
+        run: |
+          git config --global init.defaultBranch main
+          git config --global user.name "CI"
+          git config --global user.email "ci@test"
+
+      - name: Run tests with race detector
+        run: go test -race ./...
 
   lint:
     name: Lint

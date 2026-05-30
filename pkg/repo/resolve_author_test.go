@@ -62,9 +62,9 @@ func TestResolveAuthor_FallbackToUserConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// No repo-level user config. Write a global config to a temp location.
-	// We can't easily test the real ~/.graftconfig, but we can verify
-	// the fallback to $USER works.
+	// No repo-level user config and an isolated HOME with no ~/.graftconfig,
+	// so resolution falls through to $USER.
+	t.Setenv("HOME", t.TempDir())
 	t.Setenv("USER", "charlie")
 
 	// Ensure no repo-level user config is set.

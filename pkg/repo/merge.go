@@ -389,16 +389,6 @@ func chooseBetterMergeBase(best object.Hash, bestGeneration uint64, candidate ob
 	return best, bestGeneration
 }
 
-// isFastForward returns true if headHash is an ancestor of targetHash,
-// meaning the merge can be done by simply moving HEAD forward.
-func (r *Repo) isFastForward(headHash, targetHash object.Hash) bool {
-	base, err := r.FindMergeBase(headHash, targetHash)
-	if err != nil {
-		return false
-	}
-	return base == headHash
-}
-
 // saveMergeState writes pre-merge state files so that MergeAbort can restore
 // the original state. It writes MERGE_HEAD (the branch being merged) and
 // ORIG_HEAD (the HEAD hash before the merge).
@@ -943,75 +933,6 @@ func (r *Repo) commitMerge(message, author string, parent1, parent2 object.Hash)
 	r.GitShadowSyncSnapshot(message, author)
 
 	return commitHash, nil
-}
-
-// mergeThreeWay performs a three-way structural merge of a file that exists
-// in base, ours, and theirs.
-func (r *Repo) mergeThreeWay(path string, base, ours, theirs TreeFileEntry) (FileMergeReport, []byte, error) {
-	// If ours and theirs have the same blob hash, no merge needed.
-	if ours.BlobHash == theirs.BlobHash {
-		content, err := r.readBlobData(ours.BlobHash)
-		if err != nil {
-			return FileMergeReport{}, nil, err
-		}
-		return FileMergeReport{Path: path, Status: "clean"}, content, nil
-	}
-
-	// If only one side changed from base, take that side.
-	if ours.BlobHash == base.BlobHash {
-		// Only theirs changed.
-		content, err := r.readBlobData(theirs.BlobHash)
-		if err != nil {
-			return FileMergeReport{}, nil, err
-		}
-		return FileMergeReport{Path: path, Status: "clean"}, content, nil
-	}
-	if theirs.BlobHash == base.BlobHash {
-		// Only ours changed.
-		content, err := r.readBlobData(ours.BlobHash)
-		if err != nil {
-			return FileMergeReport{}, nil, err
-		}
-		return FileMergeReport{Path: path, Status: "clean"}, content, nil
-	}
-
-	// Both sides changed: full three-way merge.
-	baseData, err := r.readBlobData(base.BlobHash)
-	if err != nil {
-		return FileMergeReport{}, nil, err
-	}
-	oursData, err := r.readBlobData(ours.BlobHash)
-	if err != nil {
-		return FileMergeReport{}, nil, err
-	}
-	theirsData, err := r.readBlobData(theirs.BlobHash)
-	if err != nil {
-		return FileMergeReport{}, nil, err
-	}
-
-	return r.mergeFileContents(path, baseData, oursData, theirsData)
-}
-
-// mergeFileContents calls the structural merge engine on raw file contents.
-func (r *Repo) mergeFileContents(path string, base, ours, theirs []byte) (FileMergeReport, []byte, error) {
-	result, err := merge.MergeFiles(path, base, ours, theirs)
-	if err != nil {
-		return FileMergeReport{}, nil, fmt.Errorf("structural merge %q: %w", path, err)
-	}
-
-	fr := FileMergeReport{
-		Path:            path,
-		ConflictCount:   result.ConflictCount,
-		EntityConflicts: result.EntityConflicts,
-		Diagnostics:     result.Diagnostics,
-	}
-	if result.HasConflicts {
-		fr.Status = "conflict"
-	} else {
-		fr.Status = "clean"
-	}
-
-	return fr, result.Merged, nil
 }
 
 // readBlobData reads a blob from the store and returns its raw data.

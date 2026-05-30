@@ -384,11 +384,12 @@ func (r *Repo) add(paths []string, progress AddProgressFunc, opts AddOptions) er
 			}()
 		}
 
+	feedJobs:
 		for i := range blobs {
 			select {
 			case entityJobs <- i:
 			case <-ctx.Done():
-				break
+				break feedJobs
 			}
 		}
 		close(entityJobs)

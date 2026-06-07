@@ -66,6 +66,17 @@ func mcpCodeintelToolDefs() []mcpTool {
 				Required: []string{"name"},
 			}.toMap(),
 		},
+		{
+			Name:        "graft_ci_context",
+			Description: "Assemble a token-budgeted context window for an entity: its body, the symbols it depends on, and the entities that depend on it. Dependency edges come from the Go cross-package xref index. Use this to give an agent focused, budget-bounded context about one function/method.",
+			InputSchema: mcpSchema{
+				Properties: map[string]mcpProperty{
+					"entity": {Type: "string", Description: "selector <path::entity>, where entity is a name or identity key, e.g. 'pkg/coord/xref.go::BuildXrefIndex' (required)"},
+					"budget": {Type: "string", Description: "approximate token budget (default 2000)"},
+				},
+				Required: []string{"entity"},
+			}.toMap(),
+		},
 	}
 }
 
@@ -82,9 +93,28 @@ func mcpDispatchCodeintelTool(name string, args map[string]any) (any, error) {
 		return mcpToolCIExports(args)
 	case "graft_ci_callers":
 		return mcpToolCICallers(args)
+	case "graft_ci_context":
+		return mcpToolCIContext(args)
 	default:
 		return nil, fmt.Errorf("unknown codeintel tool %q", name)
 	}
+}
+
+// mcpToolCIContext exposes `graft context` as an MCP tool, returning the
+// token-budgeted EntityContextResult for the given selector.
+func mcpToolCIContext(args map[string]any) (any, error) {
+	selector := mcpArgString(args, "entity")
+	if selector == "" {
+		return nil, fmt.Errorf("entity is required")
+	}
+	budget := 2000
+	if b := mcpArgString(args, "budget"); b != "" {
+		var n int
+		if k, err := fmt.Sscanf(b, "%d", &n); k == 1 && err == nil && n > 0 {
+			budget = n
+		}
+	}
+	return buildContext(selector, budget)
 }
 
 // --- Tool implementations ---

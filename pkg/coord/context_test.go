@@ -50,6 +50,24 @@ func TestEstimateTokens(t *testing.T) {
 	}
 }
 
+// QualifiedSymbolName must reproduce the xref key format exactly, including
+// the empty-component branches and treating a "." package dir as the module
+// root.
+func TestQualifiedSymbolName(t *testing.T) {
+	cases := []struct{ mod, pkg, name, want string }{
+		{"m31labs.dev/graft", "pkg/coord", "BuildXrefIndex", "m31labs.dev/graft/pkg/coord.BuildXrefIndex"},
+		{"m31labs.dev/graft", "", "Main", "m31labs.dev/graft.Main"},
+		{"m31labs.dev/graft", ".", "Main", "m31labs.dev/graft.Main"},
+		{"", "pkg/x", "F", "pkg/x.F"},
+		{"", "", "F", "F"},
+	}
+	for _, c := range cases {
+		if got := QualifiedSymbolName(c.mod, c.pkg, c.name); got != c.want {
+			t.Errorf("QualifiedSymbolName(%q,%q,%q) = %q, want %q", c.mod, c.pkg, c.name, got, c.want)
+		}
+	}
+}
+
 // Under a generous budget every section is included in full.
 func TestAssembleEntityContext_FitsWithinBudget(t *testing.T) {
 	target := ContextSection{Name: "Target", Signature: "func Target()", Body: "func Target() { Dep() }"}

@@ -56,6 +56,7 @@ func main() {
 	root.AddCommand(newWorktreeCmd())
 	root.AddCommand(newCleanCmd())
 	root.AddCommand(newGrepCmd())
+	root.AddCommand(newContextCmd())
 	root.AddCommand(newShortlogCmd())
 	root.AddCommand(newArchiveCmd())
 	root.AddCommand(newModuleCmd())

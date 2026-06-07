@@ -12,6 +12,25 @@ func EstimateTokens(s string) int {
 	return (len(s) + 3) / 4
 }
 
+// QualifiedSymbolName builds the fully-qualified symbol name used as an xref
+// index key, e.g. "module/pkg/dir.Name". A package dir of "" or "." denotes the
+// module root. This mirrors the format produced by buildQualifiedNames.
+func QualifiedSymbolName(modulePath, pkgDir, name string) string {
+	if pkgDir == "." {
+		pkgDir = ""
+	}
+	switch {
+	case modulePath != "" && pkgDir != "":
+		return modulePath + "/" + pkgDir + "." + name
+	case modulePath != "":
+		return modulePath + "." + name
+	case pkgDir != "":
+		return pkgDir + "." + name
+	default:
+		return name
+	}
+}
+
 // CalleesOf returns the dependencies of an entity: the distinct symbols whose
 // call sites are enclosed by the named entity. It inverts the reverse xref
 // index (symbol -> call sites) on each call site's enclosing Entity. Results

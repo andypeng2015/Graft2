@@ -764,12 +764,29 @@ func newCoordCheckCmd(jsonFlag *bool) *cobra.Command {
 				}
 			}
 
+			// Informational: other agents currently reading the code (read
+			// presence). A soft coordination signal, not a blocking conflict, so
+			// it does not affect OK or the quiet/hook exit code.
+			type readerInfo struct {
+				AgentName string `json:"agent_name"`
+				File      string `json:"file"`
+				Entity    string `json:"entity,omitempty"`
+			}
+			var readers []readerInfo
+			if presence, perr := c.ListPresence(); perr == nil {
+				for _, e := range coord.OtherAgentPresence(presence, activeID) {
+					readers = append(readers, readerInfo{AgentName: e.AgentName, File: e.File, Entity: e.Entity})
+				}
+			}
+
 			result := struct {
-				OK        bool       `json:"ok"`
-				Conflicts []conflict `json:"conflicts,omitempty"`
+				OK        bool         `json:"ok"`
+				Conflicts []conflict   `json:"conflicts,omitempty"`
+				Readers   []readerInfo `json:"readers,omitempty"`
 			}{
 				OK:        len(conflicts) == 0,
 				Conflicts: conflicts,
+				Readers:   readers,
 			}
 
 			if *jsonFlag {
@@ -797,6 +814,17 @@ func newCoordCheckCmd(jsonFlag *bool) *cobra.Command {
 					if c.Reason != "" {
 						fmt.Printf("    %s\n", c.Reason)
 					}
+				}
+			}
+
+			if len(result.Readers) > 0 {
+				fmt.Printf("%d other agent(s) currently reading:\n", len(result.Readers))
+				for _, rd := range result.Readers {
+					loc := rd.File
+					if rd.Entity != "" {
+						loc = rd.File + "::" + rd.Entity
+					}
+					fmt.Printf("  %s reading %s\n", rd.AgentName, loc)
 				}
 			}
 

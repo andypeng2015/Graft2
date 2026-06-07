@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"time"
 )
 
@@ -74,6 +75,29 @@ func (c *Coordinator) RegisterPresence(file string, entityKey string) error {
 	}
 
 	return nil
+}
+
+// OtherAgentPresence returns the presence entries belonging to agents other
+// than activeAgentID, sorted by file, then entity, then agent name for
+// deterministic output. An empty activeAgentID treats every entry as "other".
+func OtherAgentPresence(entries []PresenceEntry, activeAgentID string) []PresenceEntry {
+	var out []PresenceEntry
+	for _, e := range entries {
+		if e.AgentID == activeAgentID {
+			continue
+		}
+		out = append(out, e)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].File != out[j].File {
+			return out[i].File < out[j].File
+		}
+		if out[i].Entity != out[j].Entity {
+			return out[i].Entity < out[j].Entity
+		}
+		return out[i].AgentName < out[j].AgentName
+	})
+	return out
 }
 
 // ListPresence returns all non-expired presence entries.

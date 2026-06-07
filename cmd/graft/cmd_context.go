@@ -24,6 +24,7 @@ type declDef struct {
 	DeclKind  string
 	Signature string
 	Body      string
+	Key       string // identity key; populated only for a resolved target
 }
 
 func (d declDef) displayName() string {
@@ -118,14 +119,39 @@ func buildContext(selector string, budget int) (*coord.EntityContextResult, erro
 		return nil, err
 	}
 
-	// Dependencies: the symbols whose call sites are enclosed by the target.
+	// Dependencies (cross-package): the symbols whose call sites are enclosed by
+	// the target, from the go/ast xref.
 	enclosing := target.displayName()
 	var depSections []coord.ContextSection
+	seenDep := map[string]bool{}
+	addDep := func(s coord.ContextSection) {
+		if seenDep[s.Name] {
+			return
+		}
+		seenDep[s.Name] = true
+		depSections = append(depSections, s)
+	}
 	for _, qual := range idx.CalleesOf(enclosing) {
 		if d, ok := lookupQualified(defs, qual, modulePath); ok {
-			depSections = append(depSections, d.section())
+			addDep(d.section())
 		} else {
-			depSections = append(depSections, coord.ContextSection{Name: qual, Signature: qual, SignatureOnly: true})
+			addDep(coord.ContextSection{Name: qual, Signature: qual, SignatureOnly: true})
+		}
+	}
+
+	// Dependencies (intra-package / any language): call references made from
+	// within the target's body, via the tree-sitter reference extractor. This
+	// covers same-package calls the go/ast xref cannot see.
+	if src, e := os.ReadFile(filepath.Join(root, filepath.FromSlash(file))); e == nil {
+		if refs, e2 := entity.ExtractReferences(file, src); e2 == nil {
+			for _, rf := range refs {
+				if rf.FromEntity != target.Key || rf.Callee == target.Name {
+					continue
+				}
+				if d, ok := lookupEnclosing(defs, rf.Callee); ok {
+					addDep(d.section())
+				}
+			}
 		}
 	}
 
@@ -170,6 +196,7 @@ func resolveContextTarget(root, file, sel string) (declDef, bool) {
 				DeclKind:  e.DeclKind,
 				Signature: e.Signature,
 				Body:      string(e.Body),
+				Key:       e.IdentityKey(),
 			}, true
 		}
 	}

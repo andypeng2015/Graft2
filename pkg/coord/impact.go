@@ -168,7 +168,7 @@ func isExportedChange(change EntityChange, exportIdx *ExportIndex) bool {
 }
 
 // matchesEntityKey checks if a change key matches an export key.
-// Change keys from the feed use the format "decl:kind::Name:sig:ordinal".
+// Change keys from the feed use the format "decl:kind::Name:ordinal".
 // Export keys use formats like "func:Name", "type:Name", "method:Recv.Name".
 func matchesEntityKey(changeKey, exportKey string) bool {
 	// Direct match.
@@ -211,9 +211,9 @@ func extractNameFromKey(key string) string {
 		return strings.TrimPrefix(key, "const:")
 	}
 
-	// Handle graft entity keys: "decl:kind:receiver:Name:sig:ordinal"
+	// Handle graft entity keys: "decl:kind:receiver:Name:ordinal"
 	if strings.HasPrefix(key, "decl:") {
-		parts := strings.SplitN(key, ":", 6)
+		parts := strings.SplitN(key, ":", 5)
 		if len(parts) >= 4 {
 			return parts[3] // Name field
 		}

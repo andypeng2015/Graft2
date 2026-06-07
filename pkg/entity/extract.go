@@ -605,7 +605,10 @@ func identityBaseKey(e *Entity) string {
 	case KindImportBlock:
 		return "import_block"
 	case KindDeclaration:
-		return fmt.Sprintf("decl:%s:%s:%s:%s", e.DeclKind, e.Receiver, e.Name, normalizeIdentityText(e.Signature))
+		// Must mirror IdentityKey's declaration components (minus Ordinal) so
+		// overloads sharing a name/kind/receiver are counted together and get
+		// distinct ordinals. Signature is excluded — see IdentityKey.
+		return fmt.Sprintf("decl:%s:%s:%s", e.DeclKind, e.Receiver, e.Name)
 	default:
 		return ""
 	}

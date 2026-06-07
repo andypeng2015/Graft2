@@ -4,7 +4,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"strings"
 )
 
 // EntityKind classifies what role an entity plays in a source file.
@@ -66,20 +65,15 @@ func (e *Entity) IdentityKey() string {
 	case KindImportBlock:
 		return fmt.Sprintf("import_block:%d", e.Ordinal)
 	case KindDeclaration:
-		sig := normalizeIdentityText(e.Signature)
-		return fmt.Sprintf("decl:%s:%s:%s:%s:%d", e.DeclKind, e.Receiver, e.Name, sig, e.Ordinal)
+		// Signature is deliberately excluded: a signature change (e.g. adding a
+		// parameter) must read as a modification of the same entity, not a
+		// delete+add. Overloads are disambiguated by Ordinal, assigned from a
+		// base key that likewise ignores the signature (see identityBaseKey).
+		return fmt.Sprintf("decl:%s:%s:%s:%d", e.DeclKind, e.Receiver, e.Name, e.Ordinal)
 	case KindInterstitial:
 		return fmt.Sprintf("between:%s:%s", e.PrevEntityKey, e.NextEntityKey)
 	}
 	return ""
-}
-
-func normalizeIdentityText(s string) string {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return "-"
-	}
-	return strings.Join(strings.Fields(s), " ")
 }
 
 // EntityList is an ordered sequence of entities extracted from a source file.

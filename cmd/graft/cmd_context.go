@@ -155,14 +155,36 @@ func buildContext(selector string, budget int) (*coord.EntityContextResult, erro
 		}
 	}
 
-	// Dependents: the entities that reference the target's qualified name.
+	// Dependents (cross-package): go/ast callers of the target's qualified name.
 	qualTarget := coord.QualifiedSymbolName(modulePath, filepath.Dir(file), target.Name)
 	var depnSections []coord.ContextSection
+	seenDepn := map[string]bool{}
+	addDependent := func(s coord.ContextSection) {
+		if seenDepn[s.Name] {
+			return
+		}
+		seenDepn[s.Name] = true
+		depnSections = append(depnSections, s)
+	}
 	for _, encl := range idx.CallersOf(qualTarget) {
 		if d, ok := lookupEnclosing(defs, encl); ok {
-			depnSections = append(depnSections, d.section())
+			addDependent(d.section())
 		} else {
-			depnSections = append(depnSections, coord.ContextSection{Name: encl, Signature: encl, SignatureOnly: true})
+			addDependent(coord.ContextSection{Name: encl, Signature: encl, SignatureOnly: true})
+		}
+	}
+
+	// Dependents (intra-package / any language): callers from the tree-sitter
+	// reference index, cached at refs/coord/meta/refindex.
+	if refIdx, e := loadOrBuildRefIndex(c); e == nil {
+		for _, site := range refIdx.DependentsByName(target.Name) {
+			callerName := nameFromEntityKey(site.FromEntity)
+			if callerName == "" || callerName == target.Name {
+				continue
+			}
+			if d, ok := lookupByNameAndFile(defs, callerName, site.File); ok {
+				addDependent(d.section())
+			}
 		}
 	}
 
@@ -287,6 +309,48 @@ func lookupEnclosing(defs map[string][]declDef, encl string) (declDef, bool) {
 	cands := defs[name]
 	for _, d := range cands {
 		if recv == "" || d.Receiver == recv {
+			return d, true
+		}
+	}
+	if len(cands) > 0 {
+		return cands[0], true
+	}
+	return declDef{}, false
+}
+
+// loadOrBuildRefIndex returns the cached tree-sitter reference index, building
+// and persisting it on first use (mirrors loadOrBuildXrefIndex).
+func loadOrBuildRefIndex(c *coord.Coordinator) (*coord.RefIndex, error) {
+	idx, err := c.LoadRefIndex()
+	if err != nil {
+		idx, err = coord.BuildRefIndex(c.Repo.RootDir)
+		if err != nil {
+			return nil, fmt.Errorf("build ref index: %w", err)
+		}
+		_ = c.SaveRefIndex(idx)
+	}
+	return idx, nil
+}
+
+// nameFromEntityKey extracts the declaration name from an identity key of the
+// form "decl:DeclKind:Receiver:Name:Ordinal".
+func nameFromEntityKey(key string) string {
+	if !strings.HasPrefix(key, "decl:") {
+		return ""
+	}
+	parts := strings.SplitN(key, ":", 5)
+	if len(parts) >= 4 {
+		return parts[3]
+	}
+	return ""
+}
+
+// lookupByNameAndFile resolves a declaration by name, preferring the candidate
+// in the given file.
+func lookupByNameAndFile(defs map[string][]declDef, name, file string) (declDef, bool) {
+	cands := defs[name]
+	for _, d := range cands {
+		if d.File == file {
 			return d, true
 		}
 	}

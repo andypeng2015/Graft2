@@ -165,30 +165,46 @@ func extractImpl(filename string, source []byte, opts ExtractOptions) (*EntityLi
 	if !hasStructuralNode {
 		return nil, fmt.Errorf("unsupported file type: %s", filename)
 	}
+	el.Entities = append(el.Entities, buildCoveringEntities(source, nodes, bt)...)
+
+	assignIdentityOrdinals(el)
+	// Set PrevEntityKey/NextEntityKey on interstitials.
+	setInterstitialNeighborKeys(el)
+
+	return el, nil
+}
+
+// buildCoveringEntities turns classified nodes into a gap-filled entity slice
+// whose bodies concatenate to source. Extracted as a seam so the byte-coverage
+// invariant can be unit-tested directly with crafted ranges.
+func buildCoveringEntities(source []byte, nodes []classifiedNode, bt *gotreesitter.BoundTree) []Entity {
 	sort.Slice(nodes, func(i, j int) bool {
-		li, _ := classifiedNodeRange(nodes[i])
-		lj, _ := classifiedNodeRange(nodes[j])
+		li, ei := classifiedNodeRange(nodes[i])
+		lj, ej := classifiedNodeRange(nodes[j])
 		if li == lj {
-			_, ei := classifiedNodeRange(nodes[i])
-			_, ej := classifiedNodeRange(nodes[j])
 			return ei < ej
 		}
 		return li < lj
 	})
 
-	// Build entities, filling gaps as interstitials.
+	out := make([]Entity, 0, len(nodes)*2+1)
 	var cursor uint32 // tracks current position in source
 
 	for _, cn := range nodes {
 		startByte, endByte := classifiedNodeRange(cn)
+		// Defensive clamp: never overlap already-covered bytes or move the
+		// cursor backward. This makes byte-for-byte reconstruction unconditional
+		// even if the parser yields overlapping or out-of-order sibling ranges.
+		if startByte < cursor {
+			startByte = cursor
+		}
 		if endByte < startByte {
 			endByte = startByte
 		}
 
 		// Fill gap before this node as interstitial.
 		if startByte > cursor {
-			gap := makeEntity(KindInterstitial, source, cursor, startByte, 0, 0)
-			el.Entities = append(el.Entities, gap)
+			out = append(out, makeEntity(KindInterstitial, source, cursor, startByte, 0, 0))
 		}
 
 		// Create the entity for this node.
@@ -218,21 +234,15 @@ func extractImpl(filename string, source []byte, opts ExtractOptions) (*EntityLi
 			e.EndLine = lineNumberAtByte(source, endByte)
 		}
 
-		el.Entities = append(el.Entities, e)
+		out = append(out, e)
 		cursor = endByte
 	}
 
 	// Fill trailing gap as interstitial.
 	if cursor < uint32(len(source)) {
-		gap := makeEntity(KindInterstitial, source, cursor, uint32(len(source)), 0, 0)
-		el.Entities = append(el.Entities, gap)
+		out = append(out, makeEntity(KindInterstitial, source, cursor, uint32(len(source)), 0, 0))
 	}
-
-	assignIdentityOrdinals(el)
-	// Set PrevEntityKey/NextEntityKey on interstitials.
-	setInterstitialNeighborKeys(el)
-
-	return el, nil
+	return out
 }
 
 // classifyNode determines the EntityKind for a root-level tree-sitter node.

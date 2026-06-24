@@ -200,6 +200,20 @@ func MergeFiles(path string, base, ours, theirs []byte) (*MergeResult, error) {
 		}
 	}
 
+	// Post-merge validation gate: if the structural merge introduced a syntax
+	// error that neither input side had, do not present it as clean. Fall back
+	// to a line-level three-way merge and flag it, so non-parsing output is
+	// never written as a clean structural merge.
+	if !result.HasConflicts && mergeIntroducedSyntaxError(path, result.Merged, ours, theirs) {
+		fb := mergeTextFallback(base, ours, theirs)
+		fb.Diagnostics = append(fb.Diagnostics, Diagnostic{
+			Severity: DiagWarning,
+			Message:  "structural merge produced invalid syntax; fell back to line-level merge",
+			Rule:     "post-merge-syntax-gate",
+		})
+		return fb, nil
+	}
+
 	return result, nil
 }
 

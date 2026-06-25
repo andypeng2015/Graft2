@@ -931,6 +931,7 @@ func (r *Repo) commitMerge(message, author string, parent1, parent2 object.Hash)
 	r.invalidateStatusCache()
 
 	r.GitShadowSyncSnapshot(message, author)
+	r.recordGitShadowCommit(commitHash)
 
 	return commitHash, nil
 }

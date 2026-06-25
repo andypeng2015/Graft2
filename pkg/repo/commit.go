@@ -182,6 +182,7 @@ func (r *Repo) CommitWithSigner(message, author string, signer CommitSigner) (ob
 
 	// 7. Mirror to git if a colocated .git/ directory exists.
 	r.GitShadowCommit(message, author, false)
+	r.recordGitShadowCommit(commitHash)
 
 	// 8. Return commit hash.
 	return commitHash, nil
@@ -294,6 +295,7 @@ func (r *Repo) CommitAmendWithSigner(message, author string, signer CommitSigner
 	r.InvalidateMergeBaseCache()
 
 	r.GitShadowCommit(message, author, true)
+	r.recordGitShadowCommit(commitHash)
 
 	return commitHash, nil
 }
@@ -397,5 +399,6 @@ func (r *Repo) commitFromStaging(p commitStagingParams) (object.Hash, error) {
 
 	r.invalidateStatusCache()
 	r.GitShadowSyncSnapshot(p.Message, p.Author)
+	r.recordGitShadowCommit(commitHash)
 	return commitHash, nil
 }

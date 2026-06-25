@@ -1,0 +1,56 @@
+package coord
+
+import (
+	"fmt"
+	"sync"
+	"testing"
+)
+
+// MutatePlan must apply a read-modify-write under optimistic concurrency
+// (CAS + retry), so many agents updating different parts of the same plan at
+// the same time never silently clobber each other — the lost-update class the
+// plain UpdateRef path allows. Eight agents are released through a barrier so
+// they collide in the same window; a blind last-write-wins implementation drops
+// updates here, a CAS+retry implementation does not.
+unit "Coordinator.MutatePlan" {
+	given "a plan with eight pending steps" {
+		c := newTestCoordinator(t)
+		steps := make([]PlanStep, 8)
+		for i := range steps {
+			steps[i] = PlanStep{ID: fmt.Sprintf("s%d", i), Description: "step", Status: "pending"}
+		}
+		createErr := c.CreatePlan(&Plan{ID: "p1", Title: "concurrency", Status: "active", Steps: steps})
+
+		when "eight agents each complete one step, released together" {
+			release := make(chan struct{})
+			var wg sync.WaitGroup
+			wg.Add(8)
+			for i := 0; i < 8; i++ {
+				go func(idx int) {
+					defer wg.Done()
+					<-release
+					_ = c.MutatePlan("p1", func(p *Plan) error {
+						p.Steps[idx].Status = "completed"
+						return nil
+					})
+				}(i)
+			}
+			close(release)
+			wg.Wait()
+
+			got, getErr := c.GetPlan("p1")
+			completed := 0
+			for _, s := range got.Steps {
+				if s.Status == "completed" {
+					completed++
+				}
+			}
+
+			then "no update was lost: all eight steps are completed" {
+				expect createErr == nil
+				expect getErr == nil
+				expect completed == 8
+			}
+		}
+	}
+}

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"sort"
 	"time"
+
+	"github.com/odvcencio/graft/pkg/object"
 )
 
 // Plan represents a coordination plan stored in refs/coord/plans/.
@@ -126,6 +128,36 @@ func (c *Coordinator) UpdatePlan(plan *Plan) error {
 	}
 	ref := refPath("plans", plan.ID)
 	return c.Repo.UpdateRef(ref, h)
+}
+
+// MutatePlan applies mutate to the current plan under optimistic concurrency
+// (read-modify-write with CAS retry), so two agents updating the same plan
+// concurrently never silently overwrite one another. The plan must already
+// exist.
+func (c *Coordinator) MutatePlan(id string, mutate func(*Plan) error) error {
+	ref := refPath("plans", id)
+	return c.updateRefCASRetry(ref, func(oldHash object.Hash) (object.Hash, error) {
+		if oldHash == "" {
+			return "", fmt.Errorf("plan %q not found", id)
+		}
+		var plan Plan
+		if err := c.readJSONBlob(oldHash, &plan); err != nil {
+			return "", fmt.Errorf("read plan: %w", err)
+		}
+		if err := mutate(&plan); err != nil {
+			return "", err
+		}
+		plan.UpdatedAt = time.Now().UTC()
+		if err := validatePlanStatus(plan.Status); err != nil {
+			return "", err
+		}
+		for i, step := range plan.Steps {
+			if err := validateStepStatus(step.Status); err != nil {
+				return "", fmt.Errorf("step %d: %w", i, err)
+			}
+		}
+		return c.writeJSONBlob(&plan)
+	})
 }
 
 // ListPlans returns all plans stored under refs/coord/plans/.

@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"sort"
 	"time"
+
+	"github.com/odvcencio/graft/pkg/object"
 )
 
 // Note represents shared in-progress coordination material stored in
@@ -121,6 +123,33 @@ func (c *Coordinator) UpdateNote(note *Note) error {
 		return fmt.Errorf("write note blob: %w", err)
 	}
 	return c.Repo.UpdateRef(refPath("notes", note.ID), h)
+}
+
+// MutateNote applies mutate to the current note under optimistic concurrency
+// (read-modify-write with CAS retry), so concurrent updates never silently
+// clobber one another. The note must already exist.
+func (c *Coordinator) MutateNote(id string, mutate func(*Note) error) error {
+	ref := refPath("notes", id)
+	return c.updateRefCASRetry(ref, func(oldHash object.Hash) (object.Hash, error) {
+		if oldHash == "" {
+			return "", fmt.Errorf("note %q not found", id)
+		}
+		var note Note
+		if err := c.readJSONBlob(oldHash, &note); err != nil {
+			return "", fmt.Errorf("read note: %w", err)
+		}
+		if err := mutate(&note); err != nil {
+			return "", err
+		}
+		note.UpdatedAt = time.Now().UTC()
+		if err := validateNoteKind(note.Kind); err != nil {
+			return "", err
+		}
+		if err := validateNoteStatus(note.Status); err != nil {
+			return "", err
+		}
+		return c.writeJSONBlob(&note)
+	})
 }
 
 // ListNotes returns all notes stored under refs/coord/notes/.

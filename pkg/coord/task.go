@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"sort"
 	"time"
+
+	"github.com/odvcencio/graft/pkg/object"
 )
 
 // Task represents an operational work item stored in refs/coord/tasks/.
@@ -92,6 +94,30 @@ func (c *Coordinator) UpdateTask(task *Task) error {
 	}
 	ref := refPath("tasks", task.ID)
 	return c.Repo.UpdateRef(ref, h)
+}
+
+// MutateTask applies mutate to the current task under optimistic concurrency
+// (read-modify-write with CAS retry), so concurrent updates never silently
+// clobber one another. The task must already exist.
+func (c *Coordinator) MutateTask(id string, mutate func(*Task) error) error {
+	ref := refPath("tasks", id)
+	return c.updateRefCASRetry(ref, func(oldHash object.Hash) (object.Hash, error) {
+		if oldHash == "" {
+			return "", fmt.Errorf("task %q not found", id)
+		}
+		var task Task
+		if err := c.readJSONBlob(oldHash, &task); err != nil {
+			return "", fmt.Errorf("read task: %w", err)
+		}
+		if err := mutate(&task); err != nil {
+			return "", err
+		}
+		task.UpdatedAt = time.Now().UTC()
+		if err := validateTaskStatus(task.Status); err != nil {
+			return "", err
+		}
+		return c.writeJSONBlob(&task)
+	})
 }
 
 // ListTasks returns all tasks stored under refs/coord/tasks/.

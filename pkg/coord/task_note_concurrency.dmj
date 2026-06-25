@@ -1,0 +1,78 @@
+package coord
+
+import (
+	"fmt"
+	"sync"
+	"testing"
+)
+
+// MutateTask and MutateNote must apply read-modify-write under optimistic
+// concurrency (CAS + retry), like MutatePlan. Appending a tag is a read-modify-
+// write: under blind last-write-wins, concurrent appends drop each other; under
+// CAS+retry, every append survives.
+
+unit "Coordinator.MutateTask" {
+	given "a task with no tags" {
+		c := newTestCoordinator(t)
+		createErr := c.CreateTask(&Task{ID: "t1", Title: "concurrency", Status: "pending"})
+
+		when "eight agents each append a distinct tag, released together" {
+			release := make(chan struct{})
+			var wg sync.WaitGroup
+			wg.Add(8)
+			for i := 0; i < 8; i++ {
+				go func(idx int) {
+					defer wg.Done()
+					<-release
+					_ = c.MutateTask("t1", func(tk *Task) error {
+						tk.Tags = append(tk.Tags, fmt.Sprintf("tag%d", idx))
+						return nil
+					})
+				}(i)
+			}
+			close(release)
+			wg.Wait()
+
+			got, getErr := c.GetTask("t1")
+
+			then "no append was lost: all eight tags survive" {
+				expect createErr == nil
+				expect getErr == nil
+				expect len(got.Tags) == 8
+			}
+		}
+	}
+}
+
+unit "Coordinator.MutateNote" {
+	given "a note with no tags" {
+		c := newTestCoordinator(t)
+		createErr := c.CreateNote(&Note{ID: "n1", Title: "concurrency", Kind: "scratch", Status: "active"})
+
+		when "eight agents each append a distinct tag, released together" {
+			release := make(chan struct{})
+			var wg sync.WaitGroup
+			wg.Add(8)
+			for i := 0; i < 8; i++ {
+				go func(idx int) {
+					defer wg.Done()
+					<-release
+					_ = c.MutateNote("n1", func(n *Note) error {
+						n.Tags = append(n.Tags, fmt.Sprintf("tag%d", idx))
+						return nil
+					})
+				}(i)
+			}
+			close(release)
+			wg.Wait()
+
+			got, getErr := c.GetNote("n1")
+
+			then "no append was lost: all eight tags survive" {
+				expect createErr == nil
+				expect getErr == nil
+				expect len(got.Tags) == 8
+			}
+		}
+	}
+}

@@ -1,0 +1,45 @@
+package coord
+
+import (
+	"testing"
+)
+
+// collectCoordPushRoots must enumerate the FULL feed chain, not just the head
+// ref tip. graft's object-graph traversal does not follow the Parent links that
+// live inside feed blob bodies (referencedHashes returns nil for TypeBlob), so
+// pushing only the ref tips would ship the head and silently drop all prior
+// feed history on the peer.
+unit "Coordinator.collectCoordPushRoots" {
+	given "a feed with three appended events" {
+		c := newTestCoordinator(t)
+		appendErr1 := c.AppendFeed(FeedEvent{Event: "e1", AgentID: "a"})
+		appendErr2 := c.AppendFeed(FeedEvent{Event: "e2", AgentID: "a"})
+		appendErr3 := c.AppendFeed(FeedEvent{Event: "e3", AgentID: "a"})
+		coordRefs, listErr := c.Repo.ListRefs("coord")
+
+		when "collecting push roots" {
+			roots := c.collectCoordPushRoots(coordRefs)
+			walked, _ := c.WalkFeed("", 100)
+
+			rootSet := map[string]bool{}
+			for _, h := range roots {
+				rootSet[string(h)] = true
+			}
+			allChainBlobsPresent := true
+			for _, ev := range walked {
+				if !rootSet[ev.FeedHash] {
+					allChainBlobsPresent = false
+				}
+			}
+
+			then "every feed-chain entry blob is included as a push root" {
+				expect appendErr1 == nil
+				expect appendErr2 == nil
+				expect appendErr3 == nil
+				expect listErr == nil
+				expect len(walked) == 3
+				expect allChainBlobsPresent == true
+			}
+		}
+	}
+}

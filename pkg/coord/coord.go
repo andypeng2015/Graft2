@@ -67,6 +67,47 @@ func (c *Coordinator) ShouldAutoPush() bool {
 	return c.Config.AutoPushCoord
 }
 
+// collectCoordPushRoots returns every object hash that must be pushed to fully
+// transfer the coord state named by coordRefs. Most coord families store one
+// self-contained blob per ref (the tip IS the whole object). The feed is the
+// exception: it is a hash-linked chain whose Parent pointers live inside the
+// blob body and are invisible to graft's object-graph traversal
+// (pkg/remote referencedHashes returns nil for TypeBlob), so we walk the chain
+// explicitly. Without this a peer receives the head pointing at a parent it
+// never got and WalkFeed silently truncates to a single event.
+func (c *Coordinator) collectCoordPushRoots(coordRefs map[string]object.Hash) []object.Hash {
+	seen := make(map[object.Hash]bool, len(coordRefs))
+	var roots []object.Hash
+	add := func(h object.Hash) {
+		if h == "" || seen[h] {
+			return
+		}
+		seen[h] = true
+		roots = append(roots, h)
+	}
+
+	for name, tip := range coordRefs {
+		add(tip)
+		// The feed head names a chain; walk head -> parent so all history transfers.
+		if "refs/"+name == feedHeadRef {
+			cur := tip
+			for cur != "" {
+				add(cur)
+				blob, err := c.Repo.Store.ReadBlob(cur)
+				if err != nil {
+					break
+				}
+				var entry FeedEntry
+				if err := json.Unmarshal(blob.Data, &entry); err != nil {
+					break
+				}
+				cur = object.Hash(entry.Parent)
+			}
+		}
+	}
+	return roots
+}
+
 // PushCoordRefs pushes refs/coord/ to all configured remotes.
 // Called after AppendFeed and OnCommit when AutoPushCoord is enabled.
 // Uses the repo config to discover remotes and iterates coord refs.

@@ -22,11 +22,13 @@ func MergeStructFields(base, ours, theirs []byte, language string) ([]byte, bool
 
 // structField represents a single field inside a struct.
 type structField struct {
-	name     string // field name (the identity key)
-	typExpr  string // type expression (for conflict detection on type changes)
-	line     string // full original line text (preserved for output)
-	tag      string // Go struct tag, if any
-	embedded bool   // true if this is an embedded/anonymous field (Go)
+	name     string   // field name (the identity key)
+	typExpr  string   // type expression (for conflict detection on type changes)
+	line     string   // full original line text (preserved for output)
+	tag      string   // Go struct tag, if any
+	embedded bool     // true if this is an embedded/anonymous field (Go)
+	leading  []string // standalone comment lines immediately preceding the field
+	inline   string   // trailing inline comment on the field's own line
 }
 
 // --- Go struct merge ---
@@ -64,6 +66,7 @@ func mergeGoStructFields(base, ours, theirs []byte) ([]byte, bool) {
 func parseGoStruct(src string) (string, []structField) {
 	lines := strings.Split(src, "\n")
 	var fields []structField
+	var pendingLeading []string
 	name := ""
 	inBody := false
 
@@ -104,9 +107,19 @@ func parseGoStruct(src string) (string, []structField) {
 		}
 
 		if inBody {
+			// Standalone comment line: hold it as a leading comment for the
+			// next field rather than dropping it.
+			if strings.HasPrefix(trimmed, "//") {
+				pendingLeading = append(pendingLeading, trimmed)
+				continue
+			}
 			field := parseGoStructField(trimmed)
 			if field.name != "" {
+				field.leading = pendingLeading
+				pendingLeading = nil
 				fields = append(fields, field)
+			} else {
+				pendingLeading = nil
 			}
 		}
 	}
@@ -122,8 +135,10 @@ func parseGoStruct(src string) (string, []structField) {
 //	io.Writer           (embedded)
 //	*http.Client        (embedded pointer)
 func parseGoStructField(line string) structField {
-	// Strip inline comments
+	// Capture (rather than drop) a trailing inline comment.
+	inline := ""
 	if idx := strings.Index(line, "//"); idx >= 0 {
+		inline = strings.TrimSpace(line[idx:])
 		line = strings.TrimSpace(line[:idx])
 	}
 	if line == "" {
@@ -153,6 +168,7 @@ func parseGoStructField(line string) structField {
 			line:     strings.TrimSpace(line),
 			tag:      tag,
 			embedded: true,
+			inline:   inline,
 		}
 	}
 
@@ -165,6 +181,7 @@ func parseGoStructField(line string) structField {
 		typExpr: typExpr,
 		line:    strings.TrimSpace(line),
 		tag:     tag,
+		inline:  inline,
 	}
 }
 
@@ -174,11 +191,20 @@ func formatGoStruct(name string, fields []structField) []byte {
 	b.WriteString(name)
 	b.WriteString(" struct {\n")
 	for _, f := range fields {
+		for _, c := range f.leading {
+			b.WriteString("\t")
+			b.WriteString(c)
+			b.WriteString("\n")
+		}
 		b.WriteString("\t")
 		b.WriteString(f.line)
 		if f.tag != "" {
 			b.WriteString(" ")
 			b.WriteString(f.tag)
+		}
+		if f.inline != "" {
+			b.WriteString(" ")
+			b.WriteString(f.inline)
 		}
 		b.WriteString("\n")
 	}

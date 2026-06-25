@@ -96,15 +96,62 @@ func formatGoImports(imports []string) []byte {
 	if len(imports) == 1 {
 		return []byte("import " + imports[0])
 	}
+
+	// Preserve Go's conventional grouping: standard-library packages first,
+	// a blank line, then third-party packages. Each group is sorted.
+	var std, third []string
+	for _, imp := range imports {
+		if isStdlibImport(imp) {
+			std = append(std, imp)
+		} else {
+			third = append(third, imp)
+		}
+	}
+	sort.Strings(std)
+	sort.Strings(third)
+
 	var b strings.Builder
 	b.WriteString("import (\n")
-	for _, imp := range imports {
-		b.WriteString("\t")
-		b.WriteString(imp)
+	writeGroup := func(group []string) {
+		for _, imp := range group {
+			b.WriteString("\t")
+			b.WriteString(imp)
+			b.WriteString("\n")
+		}
+	}
+	writeGroup(std)
+	if len(std) > 0 && len(third) > 0 {
 		b.WriteString("\n")
 	}
+	writeGroup(third)
 	b.WriteString(")")
 	return []byte(b.String())
+}
+
+// isStdlibImport reports whether a Go import spec refers to a standard-library
+// package, using the goimports heuristic: the import path's first segment has
+// no dot, so it is not a domain-qualified module path.
+func isStdlibImport(spec string) bool {
+	path := importPath(spec)
+	if path == "" {
+		return false
+	}
+	first := path
+	if i := strings.Index(path, "/"); i >= 0 {
+		first = path[:i]
+	}
+	return !strings.Contains(first, ".")
+}
+
+// importPath extracts the package path from a Go import spec, stripping any
+// alias/underscore/dot prefix and the surrounding quotes.
+func importPath(spec string) string {
+	start := strings.Index(spec, "\"")
+	end := strings.LastIndex(spec, "\"")
+	if start < 0 || end <= start {
+		return ""
+	}
+	return spec[start+1 : end]
 }
 
 type importEntry struct {

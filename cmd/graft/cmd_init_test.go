@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/odvcencio/graft/pkg/gitbridge"
 )
 
 func TestInit_FreshDirCreatesBothGraftAndGit(t *testing.T) {
@@ -75,4 +77,27 @@ func TestInit_GtsExcludedInGitInfoExclude(t *testing.T) {
 	if !strings.Contains(content, ".graft/") {
 		t.Errorf("expected .git/info/exclude to contain .graft/, got:\n%s", content)
 	}
+}
+
+// TestInitGitShadow verifies the git-shadow initialization surfaces failure
+// instead of swallowing it (the deep dive flagged init deferring a swallowed
+// git-init error to a later confusing push).
+func TestInitGitShadow(t *testing.T) {
+	t.Run("success creates .git", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := initGitShadow(dir); err != nil {
+			t.Fatalf("initGitShadow on a clean dir failed: %v", err)
+		}
+		if !gitbridge.DetectGitRepo(dir) {
+			t.Fatalf("expected .git repository to be created")
+		}
+	})
+
+	t.Run("git unavailable returns error, not nil", func(t *testing.T) {
+		dir := t.TempDir()
+		t.Setenv("PATH", "") // make the git binary unfindable
+		if err := initGitShadow(dir); err == nil {
+			t.Fatalf("expected an error when git is unavailable; got nil (error was swallowed)")
+		}
+	})
 }

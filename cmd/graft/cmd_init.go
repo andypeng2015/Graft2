@@ -52,18 +52,14 @@ func newInitCmd() *cobra.Command {
 				return err
 			}
 
-			// Then optionally create .git/ and bridge
+			// Then optionally create .git/ and bridge. Git is the mirror;
+			// graft is authoritative — so a shadow failure warns but does not
+			// abort. It must NOT be swallowed: a deferred failure would surface
+			// confusingly at a later push.
 			if !noGit {
-				_ = repo.RunExternalProcess(repo.ExternalProcessSpec{
-					Dir: abs, Path: "git", Args: []string{"init", "-b", "main"},
-					Stdout: io.Discard, Stderr: io.Discard, Label: "init-git",
-				})
-				if gitbridge.DetectGitRepo(abs) {
-					bridge, _ := gitbridge.InitBridge(abs)
-					if bridge != nil {
-						bridge.Close()
-					}
-					excludeFromGitInfoExclude(abs, ".gts/")
+				if err := initGitShadow(abs); err != nil {
+					fmt.Fprintf(cmd.ErrOrStderr(),
+						"warning: git shadow not initialized (graft is authoritative; git is the mirror): %v\n", err)
 				}
 			}
 
@@ -74,6 +70,28 @@ func newInitCmd() *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&noGit, "no-git", false, "skip creating .git/ directory")
 	return cmd
+}
+
+// initGitShadow creates the .git mirror for a fresh graft repo and registers
+// the bridge. It returns an error instead of swallowing one, so init can warn
+// at the point of failure rather than deferring a confusing failure to a later
+// git operation. Bridge registration is best-effort (matching prior behavior);
+// the hard requirement is that "git init" produced a usable .git repository.
+func initGitShadow(abs string) error {
+	if err := repo.RunExternalProcess(repo.ExternalProcessSpec{
+		Dir: abs, Path: "git", Args: []string{"init", "-b", "main"},
+		Stdout: io.Discard, Stderr: io.Discard, Label: "init-git",
+	}); err != nil {
+		return fmt.Errorf("git init: %w", err)
+	}
+	if !gitbridge.DetectGitRepo(abs) {
+		return fmt.Errorf("git init did not create a .git repository in %s", abs)
+	}
+	if bridge, _ := gitbridge.InitBridge(abs); bridge != nil {
+		bridge.Close()
+	}
+	excludeFromGitInfoExclude(abs, ".gts/")
+	return nil
 }
 
 func excludeFromGitInfoExclude(repoRoot, pattern string) {

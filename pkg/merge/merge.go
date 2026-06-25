@@ -1,6 +1,9 @@
 // Package merge implements graft's structural merge engine, which operates at
-// the entity level (functions, types, imports) using tree-sitter parsing for
-// language-aware merging across 205 languages.
+// the entity level (functions, types, imports). Cross-entity matching — clean
+// merges of independent additions, deletions, and renames — works for any
+// language gotreesitter can parse. Deeper intra-entity set-union merging
+// (struct fields, import blocks) is language-specific: most complete for Go,
+// partial for Rust and TypeScript, and a line-level diff3 fallback elsewhere.
 package merge
 
 import (

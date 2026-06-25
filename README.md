@@ -340,7 +340,7 @@ What exists:
 - Set-union import merging
 - Entity-level, line-level, and review-summary diff (`--entity`, `--review`)
 - Branch-to-branch diff (`graft diff ref1..ref2`) with entity and JSON output
-- Pack files with delta support (`graft gc`) and repository verification (`graft verify --json`)
+- Pack files with insert-only delta encoding (`graft gc`) and repository verification (`graft verify --json`)
 - Full CLI: 39 commands covering core workflows, branching, remotes, history, working tree, modules, LFS, and maintenance
 - Stash workflow (push, pop, apply, list, drop, show)
 - Rebase (standard, `--onto`, interactive, `--autostash`, conflict resolution with `--continue`/`--abort`/`--skip`)

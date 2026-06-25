@@ -4,8 +4,12 @@ import (
 	"context"
 )
 
-// AIResolver resolves entity-level merge conflicts using an external AI service.
-// Implementations live outside of Graft (e.g. in Orchard).
+// AIResolver is an optional, NOT-YET-WIRED extension point for resolving
+// entity-level merge conflicts via an external AI service. It currently has no
+// callers in graft: MergeFiles does not invoke any AI resolver and there is no
+// LLM in the merge path. A future implementation would live outside graft (e.g.
+// in Orchard) and must run behind the post-merge validation gate so it can
+// never emit non-compiling output as a clean merge.
 type AIResolver interface {
 	Resolve(ctx context.Context, req AIResolveRequest) (*AIResolveResult, error)
 }

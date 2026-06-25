@@ -200,6 +200,17 @@ func MergeFiles(path string, base, ours, theirs []byte) (*MergeResult, error) {
 		}
 	}
 
+	// Cross-entity validation: a symbol renamed or removed on one side but still
+	// referenced by the other, left undefined in the merged output, is a
+	// silently-broken "clean" merge. Surface it as a conflict.
+	if !result.HasConflicts {
+		if diags := crossEntityOrphanDiagnostics(path, result.Merged, ours, theirs, matches); len(diags) > 0 {
+			result.HasConflicts = true
+			result.ConflictCount += len(diags)
+			result.Diagnostics = append(result.Diagnostics, diags...)
+		}
+	}
+
 	// Post-merge validation gate: if the structural merge introduced a syntax
 	// error that neither input side had, do not present it as clean. Fall back
 	// to a line-level three-way merge and flag it, so non-parsing output is

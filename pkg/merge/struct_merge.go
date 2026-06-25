@@ -411,10 +411,9 @@ func mergeFieldSets(baseFields, oursFields, theirsFields []structField) ([]struc
 		}
 	}
 
-	// Sort fields for deterministic output.
-	// Preserve relative ordering: base fields first (in base order),
-	// then new fields from ours (in ours order), then new from theirs (in theirs order).
-	result := orderFields(merged, baseFields, oursFields, theirsFields)
+	// Order for deterministic, argument-order-independent output:
+	// base fields first (in base order), then new fields sorted by name.
+	result := orderFields(merged, baseFields)
 
 	return result, false
 }
@@ -428,10 +427,11 @@ func fieldMap(fields []structField) map[string]structField {
 	return m
 }
 
-// orderFields produces a stable ordering for the merged field set.
-// Fields present in base come first in their base order, then new fields
-// from ours in ours order, then new fields from theirs in theirs order.
-func orderFields(merged map[string]structField, base, ours, theirs []structField) []structField {
+// orderFields produces a deterministic ordering for the merged field set:
+// fields present in base come first in their base order, then all new fields
+// sorted by name. Sorting new fields (rather than appending ours-then-theirs)
+// makes the merge commutative: merge(A,B) == merge(B,A).
+func orderFields(merged map[string]structField, base []structField) []structField {
 	seen := make(map[string]bool, len(merged))
 	var result []structField
 
@@ -443,34 +443,17 @@ func orderFields(merged map[string]structField, base, ours, theirs []structField
 		}
 	}
 
-	// Second: new fields from ours in ours order.
-	for _, f := range ours {
-		if _, ok := merged[f.name]; ok && !seen[f.name] {
-			result = append(result, merged[f.name])
-			seen[f.name] = true
+	// Then: all remaining (new) fields ordered deterministically by name, so the
+	// result is independent of which side is "ours" vs "theirs".
+	newNames := make([]string, 0, len(merged)-len(result))
+	for name := range merged {
+		if !seen[name] {
+			newNames = append(newNames, name)
 		}
 	}
-
-	// Third: new fields from theirs in theirs order.
-	for _, f := range theirs {
-		if _, ok := merged[f.name]; ok && !seen[f.name] {
-			result = append(result, merged[f.name])
-			seen[f.name] = true
-		}
-	}
-
-	// Safety: any remaining fields (shouldn't happen, but be safe).
-	if len(result) < len(merged) {
-		remaining := make([]string, 0, len(merged)-len(result))
-		for name := range merged {
-			if !seen[name] {
-				remaining = append(remaining, name)
-			}
-		}
-		sort.Strings(remaining)
-		for _, name := range remaining {
-			result = append(result, merged[name])
-		}
+	sort.Strings(newNames)
+	for _, name := range newNames {
+		result = append(result, merged[name])
 	}
 
 	return result

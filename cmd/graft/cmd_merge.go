@@ -12,11 +12,41 @@ func newMergeCmd() *cobra.Command {
 	var abortFlag bool
 	var dryRunFlag bool
 	var jsonFlag bool
+	var gitDriver bool
 	cmd := &cobra.Command{
 		Use:   "merge <branch>",
 		Short: "Merge a branch into the current branch",
-		Args:  cobra.MaximumNArgs(1),
+		Args: func(cmd *cobra.Command, args []string) error {
+			if gitDriver {
+				if len(args) < 3 || len(args) > 4 {
+					return fmt.Errorf("--git requires <base> <ours> <theirs> [pathname]")
+				}
+				return nil
+			}
+			return cobra.MaximumNArgs(1)(cmd, args)
+		},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// Git custom merge-driver mode operates on the temp files git
+			// provides (not a graft repo), so it runs before openRepo. git
+			// reads the result from the ours (%A) file and a non-zero exit
+			// signals that conflicts remain.
+			if gitDriver {
+				cmd.SilenceUsage = true
+				cmd.SilenceErrors = true
+				pathname := "merged"
+				if len(args) >= 4 {
+					pathname = args[3]
+				}
+				conflict, err := gitMergeDriver(args[0], args[1], args[2], pathname)
+				if err != nil {
+					return err
+				}
+				if conflict {
+					return errMergeConflict
+				}
+				return nil
+			}
+
 			r, err := openRepo(".")
 			if err != nil {
 				return err
@@ -110,6 +140,7 @@ func newMergeCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&abortFlag, "abort", false, "abort the current merge and restore original state")
 	cmd.Flags().BoolVar(&dryRunFlag, "dry-run", false, "preview what a merge would do without modifying anything")
 	cmd.Flags().BoolVar(&jsonFlag, "json", false, "output in JSON format")
+	cmd.Flags().BoolVar(&gitDriver, "git", false, "act as a git merge driver: graft merge --git <base> <ours> <theirs> [pathname]")
 	return cmd
 }
 

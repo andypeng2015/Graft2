@@ -556,7 +556,16 @@ func readResolvedPackEntryAtDepth(packPath string, offset uint64, depth int) (Pa
 		return entry, nil
 
 	case PackRefDelta:
-		return PackEntry{}, fmt.Errorf("ref-delta resolution not supported in seek-based reader at offset %d", offset)
+		// graft never legitimately reaches this branch. Its own pack writer
+		// emits only OFS_DELTA (there is no WriteRefDelta), and REF_DELTA
+		// entries in packs received over the wire are fully resolved to complete
+		// objects on ingest by ResolvePackEntries (pkg/object/pack_reader.go,
+		// which looks up REF_DELTA bases by hash) before being written to the
+		// store. The random-access seek reader therefore only ever traverses
+		// OFS_DELTA chains. Reaching here means the pack is foreign (e.g. a
+		// verbatim git pack) or corrupt; the fix is to ingest it through
+		// ResolvePackEntries rather than to seek-read it.
+		return PackEntry{}, fmt.Errorf("ref-delta entry at offset %d: graft packs are OFS_DELTA-only and REF_DELTA is resolved on ingest via ResolvePackEntries; this indicates a foreign or corrupt pack", offset)
 
 	default:
 		return PackEntry{}, fmt.Errorf("unsupported pack type %d at offset %d", entry.Type, offset)

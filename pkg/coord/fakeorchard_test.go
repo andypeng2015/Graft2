@@ -174,6 +174,13 @@ func (f *fakeOrchard) hasObject(h object.Hash) bool {
 	return f.store.Has(h)
 }
 
+// refHash returns the remote value of a coord ref (empty if absent).
+func (f *fakeOrchard) refHash(name string) object.Hash {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.refs[name]
+}
+
 // TestFakeOrchard_RoundTrip is the harness smoke test: a real remote.Client
 // pushes an object, CAS-updates a ref to it, lists the ref back, and fetches
 // the object — proving the fake faithfully implements the wire contract.

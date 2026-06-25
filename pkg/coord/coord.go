@@ -1,12 +1,15 @@
 package coord
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/odvcencio/graft/pkg/object"
+	"github.com/odvcencio/graft/pkg/remote"
 	"github.com/odvcencio/graft/pkg/repo"
 )
 
@@ -121,18 +124,72 @@ func (c *Coordinator) PushCoordRefs() error {
 		return nil // no coord refs to push
 	}
 	var lastErr error
-	for remoteName := range cfg.Remotes {
-		for refName, hash := range coordRefs {
-			fullRef := "refs/" + refName
-			if err := c.Repo.UpdateRef(fullRef, hash); err != nil {
-				lastErr = err
-			}
+	for name, remoteURL := range cfg.Remotes {
+		if err := c.pushCoordRefsToRemote(coordRefs, remoteURL); err != nil {
+			lastErr = fmt.Errorf("push coord refs to %q: %w", name, err)
 		}
-		// Log intent to push (actual remote transport requires network;
-		// we record the push attempt for the remote).
-		_ = remoteName
 	}
 	return lastErr
+}
+
+// pushCoordRefsToRemote pushes the full coord object closure (the feed chain
+// included, via collectCoordPushRoots) to one remote, then CAS-updates each
+// coord ref there. Refs update individually so a single stale ref does not fail
+// the whole set, and each retries on a remote CAS conflict.
+func (c *Coordinator) pushCoordRefsToRemote(coordRefs map[string]object.Hash, remoteURL string) error {
+	ctx := context.Background()
+	client, err := remote.NewClient(remoteURL)
+	if err != nil {
+		return err
+	}
+
+	roots := c.collectCoordPushRoots(coordRefs)
+	objs := make([]remote.ObjectRecord, 0, len(roots))
+	for _, h := range roots {
+		typ, data, err := c.Repo.Store.Read(h)
+		if err != nil {
+			return fmt.Errorf("read coord object %s: %w", h, err)
+		}
+		objs = append(objs, remote.ObjectRecord{Hash: h, Type: typ, Data: data})
+	}
+	if err := client.PushObjects(ctx, objs); err != nil {
+		return err
+	}
+
+	for refName, newHash := range coordRefs {
+		if err := casUpdateRemoteRef(ctx, client, refName, newHash); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// casUpdateRemoteRef sets refName to newHash on the remote via compare-and-swap
+// against the remote's current value, retrying on a remote CAS conflict (e.g.
+// another agent advanced coord/feed/head concurrently).
+func casUpdateRemoteRef(ctx context.Context, client *remote.Client, refName string, newHash object.Hash) error {
+	var lastErr error
+	for attempt := 0; attempt < maxCASRetries; attempt++ {
+		remoteRefs, err := client.ListRefs(ctx)
+		if err != nil {
+			return err
+		}
+		old := remoteRefs[refName] // "" if absent
+		if old == newHash {
+			return nil // already current
+		}
+		nh := newHash
+		if _, err := client.UpdateRefs(ctx, []remote.RefUpdate{{Name: refName, Old: &old, New: &nh}}); err != nil {
+			var re *remote.RemoteError
+			if errors.As(err, &re) && re.Code == "ref_conflict" {
+				lastErr = err
+				continue // remote moved; re-read and retry
+			}
+			return err
+		}
+		return nil
+	}
+	return fmt.Errorf("ref %q: exceeded %d CAS retries: %w", refName, maxCASRetries, lastErr)
 }
 
 // OnCommit runs after a successful graft commit:

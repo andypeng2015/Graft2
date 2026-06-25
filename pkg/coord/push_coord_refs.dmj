@@ -1,0 +1,44 @@
+package coord
+
+import (
+	"testing"
+
+	"github.com/odvcencio/graft/pkg/object"
+)
+
+// PushCoordRefs must push the FULL coord object closure (the entire feed chain,
+// not just the head blob) to the remote and CAS-update the coord refs there. A
+// transport that pushes only the ref tips would land the head and leave the
+// peer's feed truncated.
+unit "Coordinator.PushCoordRefs" {
+	given "a three-event feed and then a configured remote" {
+		f, ts := newFakeOrchard(t)
+		defer ts.Close()
+		c := newTestCoordinator(t)
+		_ = c.AppendFeed(FeedEvent{Event: "e1", AgentID: "a"})
+		_ = c.AppendFeed(FeedEvent{Event: "e2", AgentID: "a"})
+		_ = c.AppendFeed(FeedEvent{Event: "e3", AgentID: "a"})
+		setRemoteErr := c.Repo.SetRemote("origin", f.baseURL(ts))
+
+		when "pushing coord refs to the remote" {
+			pushErr := c.PushCoordRefs()
+
+			walked, _ := c.WalkFeed("", 100)
+			allChainOnRemote := true
+			for _, ev := range walked {
+				if !f.hasObject(object.Hash(ev.FeedHash)) {
+					allChainOnRemote = false
+				}
+			}
+			headSetRemotely := f.refHash("coord/feed/head") != object.Hash("")
+
+			then "the full feed chain transferred and the head ref is set remotely" {
+				expect setRemoteErr == nil
+				expect pushErr == nil
+				expect len(walked) == 3
+				expect allChainOnRemote == true
+				expect headSetRemotely == true
+			}
+		}
+	}
+}

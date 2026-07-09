@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/odvcencio/graft/pkg/redact"
 )
 
 type ExecTrace struct {
@@ -34,6 +36,7 @@ type SpawnTraceViewOptions struct {
 	CollapseHeartbeats bool     `json:"collapse_heartbeats"`
 	Phases             []string `json:"phases,omitempty"`
 	NoDefaultFallbacks bool     `json:"no_default_fallbacks,omitempty"`
+	Redact             bool     `json:"redact,omitempty"`
 }
 
 type TraceRuleView struct {
@@ -101,9 +104,18 @@ type SpawnTraceView struct {
 	SpawnPolicy         *TraceDecisionView `json:"spawn_policy,omitempty"`
 	Execs               []ExecTraceView    `json:"execs,omitempty"`
 	Phases              []TracePhaseView   `json:"phases,omitempty"`
+	Redaction           *TraceRedaction    `json:"redaction,omitempty"`
 	RawEventCount       int                `json:"raw_event_count"`
 	RenderedEventCount  int                `json:"rendered_event_count"`
 	CollapsedHeartbeats int                `json:"collapsed_heartbeats,omitempty"`
+}
+
+type TraceRedaction struct {
+	SecretsIncluded    bool     `json:"secrets_included"`
+	CommandsIncluded   bool     `json:"commands_included"`
+	LocalPathsIncluded bool     `json:"local_paths_included"`
+	SourceIncluded     bool     `json:"source_included"`
+	Notes              []string `json:"notes,omitempty"`
 }
 
 func ExecTracesDir(graftDir string) string {
@@ -262,7 +274,200 @@ func BuildSpawnTraceView(trace *SpawnTrace, opts SpawnTraceViewOptions) *SpawnTr
 	view.CollapsedHeartbeats = collapsed
 	view.RenderedEventCount = len(eventViews)
 	view.Phases = groupTraceEventsByPhase(eventViews)
+	if opts.Redact {
+		redactSpawnTraceView(view)
+	}
 	return view
+}
+
+func redactSpawnTraceView(view *SpawnTraceView) {
+	if view == nil {
+		return
+	}
+	view.Redaction = &TraceRedaction{
+		SecretsIncluded:    false,
+		CommandsIncluded:   false,
+		LocalPathsIncluded: false,
+		SourceIncluded:     false,
+		Notes: []string{
+			"command arguments, environment values, local paths, and source contents are omitted or redacted",
+		},
+	}
+	view.Record = redactSpawnRecord(view.Record)
+	view.Lease = redactSpawnLease(view.Lease)
+	view.SpawnAction = redactTraceDecisionView(view.SpawnAction)
+	view.SpawnPolicy = redactTraceDecisionView(view.SpawnPolicy)
+	for i := range view.Execs {
+		view.Execs[i].Selector = redactTraceString(view.Execs[i].Selector)
+		view.Execs[i].Program = redactProgramPath(view.Execs[i].Program)
+		view.Execs[i].Decision = redactTraceDecisionView(view.Execs[i].Decision)
+	}
+	for phaseIdx := range view.Phases {
+		for eventIdx := range view.Phases[phaseIdx].Events {
+			view.Phases[phaseIdx].Events[eventIdx].Selector = redactTraceString(view.Phases[phaseIdx].Events[eventIdx].Selector)
+		}
+	}
+}
+
+func redactSpawnRecord(record *SpawnRecord) *SpawnRecord {
+	if record == nil {
+		return nil
+	}
+	copy := *record
+	copy.RepoRoot = ""
+	copy.Command = nil
+	copy.Selector = redactTraceString(copy.Selector)
+	copy.StdoutPath = ""
+	copy.StderrPath = ""
+	copy.ActionInput = redactActionPolicyInput(copy.ActionInput)
+	copy.SpawnInput = redactSpawnPolicyInput(copy.SpawnInput)
+	copy.ActionDecision = nil
+	copy.SpawnDecision = nil
+	return &copy
+}
+
+func redactSpawnLease(lease *SpawnLease) *SpawnLease {
+	if lease == nil {
+		return nil
+	}
+	copy := *lease
+	copy.RepoRoot = ""
+	copy.Command = nil
+	if len(copy.Env) > 0 {
+		env := make(map[string]string, len(copy.Env))
+		for key := range copy.Env {
+			env[key] = "redacted"
+		}
+		copy.Env = env
+	}
+	return &copy
+}
+
+func redactActionPolicyInput(input ActionPolicyInput) ActionPolicyInput {
+	input.Action.Selector = redactTraceString(input.Action.Selector)
+	input.Action.Program = redactProgramPath(input.Action.Program)
+	input.Action.Subcommand = redactTraceString(input.Action.Subcommand)
+	input.Action.Argv = nil
+	input.Repo.Root = ""
+	input.Process = ActionPolicyProcess{}
+	return input
+}
+
+func redactSpawnPolicyInput(input SpawnPolicyInput) SpawnPolicyInput {
+	input.Action.Selector = redactTraceString(input.Action.Selector)
+	input.Repo.Root = ""
+	return input
+}
+
+func redactTraceDecisionView(decision *TraceDecisionView) *TraceDecisionView {
+	if decision == nil {
+		return nil
+	}
+	copy := *decision
+	copy.Bundle = redactPolicyBundleInfo(copy.Bundle)
+	copy.RuleOrigin = redactPolicyOrigin(copy.RuleOrigin)
+	copy.Governance = redactPolicyGovernance(copy.Governance)
+	if len(decision.Rules) > 0 {
+		copy.Rules = make([]TraceRuleView, 0, len(decision.Rules))
+		for _, rule := range decision.Rules {
+			rule.Origin = redactPolicyOrigin(rule.Origin)
+			rule.Params = redactTraceParams(rule.Params)
+			copy.Rules = append(copy.Rules, rule)
+		}
+	}
+	return &copy
+}
+
+func redactPolicyBundleInfo(info PolicyBundleInfo) PolicyBundleInfo {
+	info.Root = ""
+	if len(info.Files) > 0 {
+		files := make([]string, len(info.Files))
+		for i, file := range info.Files {
+			files[i] = filepath.Base(file)
+		}
+		info.Files = files
+	}
+	return info
+}
+
+func redactPolicyGovernance(steps []PolicyGovernanceStep) []PolicyGovernanceStep {
+	if len(steps) == 0 {
+		return nil
+	}
+	out := make([]PolicyGovernanceStep, 0, len(steps))
+	for _, step := range steps {
+		step.Origin = redactPolicyOrigin(step.Origin)
+		out = append(out, step)
+	}
+	return out
+}
+
+func redactPolicyOrigin(origin *PolicySourceOrigin) *PolicySourceOrigin {
+	if origin == nil {
+		return nil
+	}
+	copy := *origin
+	if copy.File != "" {
+		copy.File = filepath.Base(copy.File)
+	}
+	return &copy
+}
+
+func redactTraceParams(params map[string]any) map[string]any {
+	if len(params) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(params))
+	for key, value := range params {
+		if redact.SensitiveKey(key) {
+			out[key] = redact.Replacement
+			continue
+		}
+		out[key] = redactTraceValue(value)
+	}
+	return out
+}
+
+func redactTraceValue(value any) any {
+	switch v := value.(type) {
+	case string:
+		return redactTraceString(v)
+	case []string:
+		out := make([]string, len(v))
+		for i, item := range v {
+			out[i] = redactTraceString(item)
+		}
+		return out
+	case []any:
+		out := make([]any, len(v))
+		for i, item := range v {
+			out[i] = redactTraceValue(item)
+		}
+		return out
+	case map[string]any:
+		return redactTraceParams(v)
+	default:
+		return value
+	}
+}
+
+func redactTraceString(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	if redact.LooksSensitive(value) {
+		return redact.Replacement
+	}
+	return redact.Text(value)
+}
+
+func redactProgramPath(program string) string {
+	program = redactTraceString(program)
+	if program == "" || program == "redacted" {
+		return program
+	}
+	return filepath.Base(program)
 }
 
 func eventMatchesSpawnTrace(event Event, spawnID, childAgentID string) bool {

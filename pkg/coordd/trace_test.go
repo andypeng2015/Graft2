@@ -1,7 +1,9 @@
 package coordd
 
 import (
+	"encoding/json"
 	"io"
+	"strings"
 	"testing"
 	"time"
 
@@ -204,5 +206,103 @@ func TestBuildSpawnTraceView_FiltersPhasesAndHidesDefaultFallbacks(t *testing.T)
 	}
 	if view.RenderedEventCount != 2 {
 		t.Fatalf("RenderedEventCount = %d, want 2 execution events", view.RenderedEventCount)
+	}
+}
+
+func TestBuildSpawnTraceViewRedactsSupportSensitiveFields(t *testing.T) {
+	now := time.Now().UTC()
+	trace := &SpawnTrace{
+		Record: &SpawnRecord{
+			ID:         "spawn-secret",
+			RepoRoot:   "/tmp/private/repo",
+			Command:    []string{"sh", "-c", "echo secret-token"},
+			Selector:   "shell:echo secret-token",
+			StdoutPath: "/tmp/private/repo/.graft/coordd/spawns/stdout.log",
+			StderrPath: "/tmp/private/repo/.graft/coordd/spawns/stderr.log",
+			ActionInput: ActionPolicyInput{
+				Action: ActionPolicyAction{
+					Selector: "shell:echo secret-token",
+					Program:  "/tmp/private/repo/script.sh",
+					Argv:     []string{"script.sh", "--token", "secret-token"},
+				},
+				Repo:    ActionPolicyRepo{Present: true, Root: "/tmp/private/repo"},
+				Process: ActionPolicyProcess{Label: "secret-label", Origin: "/tmp/private/repo/script.sh"},
+			},
+			ActionDecision: &ActionPolicyDecision{
+				Action: "Allow",
+				Rule:   "AllowSecret",
+				Trace: []ActionPolicyTrace{{
+					Rule:    "AllowSecret",
+					Matched: true,
+					Params: map[string]any{
+						"headers": map[string]any{"Authorization": "Bearer header-secret"},
+						"reason":  "safe",
+						"token":   "secret-token",
+					},
+					Origin: &PolicySourceOrigin{File: "/tmp/private/repo/.graft/coordd/policies/action.arb", Line: 7},
+				}},
+			},
+		},
+		Lease: &SpawnLease{
+			ID:       "spawn-secret",
+			RepoRoot: "/tmp/private/repo",
+			Command:  []string{"sh", "-c", "echo secret-token"},
+			Env: map[string]string{
+				"GRAFT_TOKEN":          "secret-token",
+				"GRAFT_COORD_AGENT_ID": "agent-1",
+			},
+		},
+		Execs: []ExecTrace{{
+			ID:        "exec-secret",
+			CreatedAt: now,
+			AgentID:   "agent-1",
+			Input: ActionPolicyInput{
+				Action: ActionPolicyAction{
+					Selector: "shell:echo secret-token",
+					Program:  "/tmp/private/repo/script.sh",
+					Argv:     []string{"script.sh", "--token", "secret-token"},
+				},
+			},
+			Result: &ExecResult{Decision: &ActionPolicyDecision{
+				Action: "Allow",
+				Rule:   "AllowExec",
+				Trace: []ActionPolicyTrace{{
+					Rule:    "AllowExec",
+					Matched: true,
+					Params:  map[string]any{"password": "secret-token", "reason": "safe"},
+				}},
+			}},
+		}},
+		Events: []Event{{
+			Type:      "action_exec_started",
+			Timestamp: now,
+			Data: map[string]any{
+				"selector": "shell:echo secret-token",
+			},
+		}},
+	}
+
+	view := BuildSpawnTraceView(trace, SpawnTraceViewOptions{Redact: true})
+	raw, err := json.Marshal(view)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	text := string(raw)
+	for _, forbidden := range []string{"secret-token", "header-secret", "/tmp/private/repo", "script.sh --token"} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("redacted trace leaked %q:\n%s", forbidden, text)
+		}
+	}
+	if view.Redaction == nil || view.Redaction.SecretsIncluded || view.Redaction.CommandsIncluded || view.Redaction.LocalPathsIncluded || view.Redaction.SourceIncluded {
+		t.Fatalf("unexpected redaction metadata: %#v", view.Redaction)
+	}
+	if view.Record == nil || len(view.Record.Command) != 0 || view.Record.RepoRoot != "" || view.Record.StdoutPath != "" || view.Record.ActionDecision != nil {
+		t.Fatalf("record not redacted: %#v", view.Record)
+	}
+	if view.Lease == nil || len(view.Lease.Command) != 0 || view.Lease.RepoRoot != "" || view.Lease.Env["GRAFT_TOKEN"] != "redacted" {
+		t.Fatalf("lease not redacted: %#v", view.Lease)
+	}
+	if len(view.Execs) != 1 || view.Execs[0].Program != "script.sh" || view.Execs[0].Selector != "redacted" {
+		t.Fatalf("exec not redacted: %#v", view.Execs)
 	}
 }

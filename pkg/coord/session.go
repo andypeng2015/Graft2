@@ -124,3 +124,27 @@ func TouchSession(graftDir string, s *Session) error {
 	s.PID = os.Getpid()
 	return SaveSession(graftDir, s)
 }
+
+// TouchSessionByAgentID updates the persistent session that owns agentID while
+// preserving the rest of its saved metadata. It returns nil, nil when no
+// matching session exists.
+func TouchSessionByAgentID(graftDir, agentID string) (*Session, error) {
+	if agentID == "" {
+		return nil, nil
+	}
+	sessions, err := ListSessions(graftDir)
+	if err != nil {
+		return nil, err
+	}
+	for i := range sessions {
+		if sessions[i].AgentID != agentID {
+			continue
+		}
+		session := sessions[i]
+		if err := TouchSession(graftDir, &session); err != nil {
+			return nil, err
+		}
+		return &session, nil
+	}
+	return nil, nil
+}

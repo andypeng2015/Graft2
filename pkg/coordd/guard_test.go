@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/odvcencio/arbiter/overrides"
 	"github.com/odvcencio/graft/pkg/coord"
 	"github.com/odvcencio/graft/pkg/repo"
+	"m31labs.dev/arbiter/overrides"
 )
 
 func TestEvaluateActionPolicy_DestructiveRMBlocked(t *testing.T) {
@@ -256,6 +256,50 @@ rule Fallback priority 999 {
 	}
 	if !foundSegmentOrigin {
 		t.Fatalf("decision.Governance = %#v, want repo_local_gate origin from segments.arb", decision.Governance)
+	}
+}
+
+func TestEvaluateActionPolicyWithRepo_MalformedRepoLocalPolicyFailsClosed(t *testing.T) {
+	dir := t.TempDir()
+	r, err := repo.Init(dir)
+	if err != nil {
+		t.Fatalf("repo.Init: %v", err)
+	}
+
+	path := filepath.Join(GuardPoliciesDir(r.GraftDir), "action.arb")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(path, []byte(`rule BrokenAction {
+    when {
+        this is not valid arbiter syntax
+    }
+    then Allow {}
+}
+`), 0o644); err != nil {
+		t.Fatalf("WriteFile action policy: %v", err)
+	}
+
+	input := ActionPolicyInput{
+		Action: ActionPolicyAction{
+			Kind:     "shell",
+			Selector: "shell:noop",
+			Program:  "noop",
+		},
+		Repo:    ActionPolicyRepo{Present: true, Root: r.RootDir},
+		Session: ActionPolicySession{ActiveAgent: true, AgentID: "agent-1"},
+		Guard:   GuardPolicy{Mode: "enforce"},
+	}
+
+	decision, err := EvaluateActionPolicyWithRepo(r, input)
+	if err == nil {
+		t.Fatal("EvaluateActionPolicyWithRepo succeeded, want malformed policy error")
+	}
+	if decision != nil {
+		t.Fatalf("decision = %#v, want nil on malformed policy", decision)
+	}
+	if !strings.Contains(err.Error(), "action policy") {
+		t.Fatalf("error = %q, want action policy context", err.Error())
 	}
 }
 

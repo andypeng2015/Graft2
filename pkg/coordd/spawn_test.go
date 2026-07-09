@@ -120,6 +120,58 @@ rule Fallback priority 999 {
 	}
 }
 
+func TestEvaluateSpawnPolicyWithRepo_MalformedRepoLocalPolicyFailsClosed(t *testing.T) {
+	dir := t.TempDir()
+	r, err := repo.Init(dir)
+	if err != nil {
+		t.Fatalf("repo.Init: %v", err)
+	}
+
+	path := filepath.Join(GuardPoliciesDir(r.GraftDir), "spawn.arb")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(path, []byte(`rule BrokenSpawn {
+    when {
+        this is not valid arbiter syntax
+    }
+    then Allow {}
+}
+`), 0o644); err != nil {
+		t.Fatalf("WriteFile spawn policy: %v", err)
+	}
+
+	input := SpawnPolicyInput{
+		Action: SpawnPolicyAction{
+			Decision: "Allow",
+			Profile:  "read_only",
+			Selector: "shell:noop",
+		},
+		Repo:    ActionPolicyRepo{Present: true, Root: r.RootDir},
+		Session: ActionPolicySession{ActiveAgent: true, AgentID: "agent-1"},
+		Spawn: SpawnPolicySpec{
+			Name:            "child-agent",
+			NamePresent:     true,
+			CommandPresent:  true,
+			SelectedProfile: "read_only",
+			SelectedValid:   true,
+			Runtime:         "lease",
+			RuntimeValid:    true,
+		},
+	}
+
+	decision, err := EvaluateSpawnPolicyWithRepo(r, input)
+	if err == nil {
+		t.Fatal("EvaluateSpawnPolicyWithRepo succeeded, want malformed policy error")
+	}
+	if decision != nil {
+		t.Fatalf("decision = %#v, want nil on malformed policy", decision)
+	}
+	if !strings.Contains(err.Error(), "spawn policy") {
+		t.Fatalf("error = %q, want spawn policy context", err.Error())
+	}
+}
+
 func TestSpawnDetached_StartsHostDirectAndPersistsRecord(t *testing.T) {
 	dir := t.TempDir()
 	r, err := repo.Init(dir)

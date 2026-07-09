@@ -1,6 +1,7 @@
 package coordd
 
 import (
+	"context"
 	_ "embed"
 	"encoding/json"
 	"fmt"
@@ -12,12 +13,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/odvcencio/arbiter"
-	"github.com/odvcencio/arbiter/govern"
-	"github.com/odvcencio/arbiter/overrides"
-	"github.com/odvcencio/arbiter/vm"
 	"github.com/odvcencio/graft/pkg/coord"
 	"github.com/odvcencio/graft/pkg/repo"
+	"m31labs.dev/arbiter"
+	"m31labs.dev/arbiter/govern"
+	"m31labs.dev/arbiter/overrides"
+	"m31labs.dev/arbiter/vm"
 )
 
 //go:embed default_spawn_policy.arb
@@ -346,6 +347,10 @@ func ConsumeSpawn(graftDir, id, childAgentID string) (*SpawnView, error) {
 }
 
 func AttachSpawn(r *repo.Repo, id string, heartbeatInterval time.Duration, execIO ExecIO) (*SpawnRecord, error) {
+	return AttachSpawnWithContext(context.Background(), r, id, heartbeatInterval, execIO)
+}
+
+func AttachSpawnWithContext(ctx context.Context, r *repo.Repo, id string, heartbeatInterval time.Duration, execIO ExecIO) (*SpawnRecord, error) {
 	if r == nil {
 		return nil, fmt.Errorf("attach requires an open repo")
 	}
@@ -367,7 +372,7 @@ func AttachSpawn(r *repo.Repo, id string, heartbeatInterval time.Duration, execI
 		heartbeatInterval = 5 * time.Second
 	}
 
-	cmd := exec.Command(record.Command[0], record.Command[1:]...)
+	cmd := exec.CommandContext(execContext(ctx), record.Command[0], record.Command[1:]...)
 	cmd.Stdin = execInput(execIO.Stdin, os.Stdin)
 	cmd.Stdout = execOutput(execIO.Stdout, os.Stdout)
 	cmd.Stderr = execOutput(execIO.Stderr, os.Stderr)
@@ -385,7 +390,10 @@ func AttachSpawn(r *repo.Repo, id string, heartbeatInterval time.Duration, execI
 	cmd.Env = append(os.Environ(), env...)
 
 	if err := cmd.Start(); err != nil {
-		_, _ = FinishSpawn(r.GraftDir, id, "failed", record.ChildAgentID)
+		finished, _ := FinishSpawn(r.GraftDir, id, "failed", record.ChildAgentID)
+		if finished != nil {
+			return finished, err
+		}
 		return record, err
 	}
 	record.PID = cmd.Process.Pid

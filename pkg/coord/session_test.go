@@ -171,6 +171,56 @@ func TestTouchSession(t *testing.T) {
 	}
 }
 
+func TestTouchSessionByAgentIDPreservesMetadata(t *testing.T) {
+	dir := t.TempDir()
+
+	before := time.Now().UTC().Add(-10 * time.Minute)
+	s := &Session{
+		AgentID:    "touch-by-id",
+		AgentName:  "cedar",
+		Workspace:  "graft",
+		Host:       "host-a",
+		StartedAt:  before,
+		LastActive: before,
+		PID:        1234,
+		Scope:      "./pkg/...",
+		Mode:       "watching",
+	}
+	if err := SaveSession(dir, s); err != nil {
+		t.Fatalf("SaveSession: %v", err)
+	}
+
+	touched, err := TouchSessionByAgentID(dir, "touch-by-id")
+	if err != nil {
+		t.Fatalf("TouchSessionByAgentID: %v", err)
+	}
+	if touched == nil {
+		t.Fatal("TouchSessionByAgentID returned nil, want touched session")
+	}
+	if !touched.LastActive.After(before) {
+		t.Fatalf("LastActive = %s, want after %s", touched.LastActive, before)
+	}
+	if touched.Workspace != "graft" || touched.Host != "host-a" || touched.Scope != "./pkg/..." || touched.Mode != "watching" {
+		t.Fatalf("metadata changed after touch: %+v", touched)
+	}
+
+	loaded, err := LoadSession(dir, "cedar")
+	if err != nil {
+		t.Fatalf("LoadSession: %v", err)
+	}
+	if loaded.Workspace != "graft" || loaded.Host != "host-a" || loaded.Scope != "./pkg/..." || loaded.Mode != "watching" {
+		t.Fatalf("persisted metadata changed after touch: %+v", loaded)
+	}
+
+	missing, err := TouchSessionByAgentID(dir, "missing")
+	if err != nil {
+		t.Fatalf("TouchSessionByAgentID missing: %v", err)
+	}
+	if missing != nil {
+		t.Fatalf("missing touch = %+v, want nil", missing)
+	}
+}
+
 func TestSessionResume(t *testing.T) {
 	// Simulate: create session, "restart" (new process), resume with same agent ID
 	dir := t.TempDir()

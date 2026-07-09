@@ -8,11 +8,11 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/odvcencio/arbiter"
-	"github.com/odvcencio/arbiter/govern"
-	"github.com/odvcencio/arbiter/overrides"
-	"github.com/odvcencio/arbiter/vm"
 	"github.com/odvcencio/graft/pkg/repo"
+	"m31labs.dev/arbiter"
+	"m31labs.dev/arbiter/govern"
+	"m31labs.dev/arbiter/overrides"
+	"m31labs.dev/arbiter/vm"
 )
 
 const (

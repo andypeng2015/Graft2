@@ -281,25 +281,31 @@ func selectExecBackend(r *repo.Repo, cfg *GuardConfig, requested RuntimeProfile)
 func selectExecBackendForPreference(r *repo.Repo, cfg *GuardConfig, requested RuntimeProfile, preference string) (string, RuntimeProfile, []string, error) {
 	switch preference {
 	case "auto":
-		if canUseContainer(r, cfg, requested) {
+		var unavailable []string
+		if err := containerAvailability(r, cfg, requested); err == nil {
 			return "container", requested, nil, nil
+		} else {
+			unavailable = append(unavailable, "container backend unavailable: "+err.Error())
 		}
-		if canUseBwrap(r, requested) {
+		if err := bwrapAvailability(r, requested); err == nil {
 			return "host-bwrap", requested, nil, nil
+		} else {
+			unavailable = append(unavailable, "host-bwrap backend unavailable: "+err.Error())
 		}
 		effective, degradations := directEffectiveProfile(requested)
+		degradations = append(unavailable, degradations...)
 		return "host-direct", effective, degradations, nil
 	case "host-direct":
 		effective, degradations := directEffectiveProfile(requested)
 		return "host-direct", effective, degradations, nil
 	case "host-bwrap":
-		if !canUseBwrap(r, requested) {
-			return "", RuntimeProfile{}, nil, fmt.Errorf("coordd host-bwrap backend unavailable for requested profile %s", requested.Name)
+		if err := bwrapAvailability(r, requested); err != nil {
+			return "", RuntimeProfile{}, nil, fmt.Errorf("coordd host-bwrap backend unavailable for requested profile %s: %w", requested.Name, err)
 		}
 		return "host-bwrap", requested, nil, nil
 	case "container":
-		if !canUseContainer(r, cfg, requested) {
-			return "", RuntimeProfile{}, nil, fmt.Errorf("coordd container backend unavailable for requested profile %s", requested.Name)
+		if err := containerAvailability(r, cfg, requested); err != nil {
+			return "", RuntimeProfile{}, nil, fmt.Errorf("coordd container backend unavailable for requested profile %s: %w", requested.Name, err)
 		}
 		return "container", requested, nil, nil
 	default:
@@ -328,29 +334,41 @@ func directEffectiveProfile(requested RuntimeProfile) (RuntimeProfile, []string)
 }
 
 func canUseBwrap(r *repo.Repo, requested RuntimeProfile) bool {
+	return bwrapAvailability(r, requested) == nil
+}
+
+func bwrapAvailability(r *repo.Repo, requested RuntimeProfile) error {
 	if runtime.GOOS != "linux" {
-		return false
+		return fmt.Errorf("host-bwrap requires linux")
 	}
-	if _, err := exec.LookPath("bwrap"); err != nil {
-		return false
+	if err := probeExecutableWithTimeout("bwrap", "--version"); err != nil {
+		return err
 	}
 	if requested.FilesystemScope == FilesystemScopeRepoRO || requested.FilesystemScope == FilesystemScopeRepoRW {
-		return r != nil && r.RootDir != ""
+		if r == nil || strings.TrimSpace(r.RootDir) == "" {
+			return fmt.Errorf("repo filesystem scopes require an open repo root")
+		}
 	}
-	return true
+	return nil
 }
 
 func canUseContainer(r *repo.Repo, cfg *GuardConfig, requested RuntimeProfile) bool {
-	if _, err := resolveContainerRuntime(cfg); err != nil {
-		return false
-	}
+	return containerAvailability(r, cfg, requested) == nil
+}
+
+func containerAvailability(r *repo.Repo, cfg *GuardConfig, requested RuntimeProfile) error {
 	if cfg == nil || strings.TrimSpace(cfg.ContainerImage) == "" {
-		return false
+		return fmt.Errorf("container image is not configured")
+	}
+	if _, err := resolveContainerRuntime(cfg); err != nil {
+		return err
 	}
 	if requested.FilesystemScope == FilesystemScopeRepoRO || requested.FilesystemScope == FilesystemScopeRepoRW {
-		return r != nil && r.RootDir != ""
+		if r == nil || strings.TrimSpace(r.RootDir) == "" {
+			return fmt.Errorf("repo filesystem scopes require an open repo root")
+		}
 	}
-	return true
+	return nil
 }
 
 func runWithBackend(backend string, r *repo.Repo, input ActionPolicyInput, decisionAction string, requested, effective RuntimeProfile, proc guardedProcessSpec) error {
@@ -422,6 +440,35 @@ type ContainerInvocation struct {
 	Args    []string
 }
 
+const defaultSandboxProbeTimeout = 2 * time.Second
+
+var sandboxProbeTimeout = defaultSandboxProbeTimeout
+
+func probeExecutableWithTimeout(name string, args ...string) error {
+	path, err := exec.LookPath(name)
+	if err != nil {
+		return fmt.Errorf("%s not found: %w", name, err)
+	}
+
+	timeout := sandboxProbeTimeout
+	if timeout <= 0 {
+		timeout = defaultSandboxProbeTimeout
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, path, args...)
+	cmd.Stdout = io.Discard
+	cmd.Stderr = io.Discard
+	if err := cmd.Run(); err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return fmt.Errorf("%s probe timed out after %s", name, timeout)
+		}
+		return fmt.Errorf("%s probe failed: %w", name, err)
+	}
+	return nil
+}
+
 func resolveContainerRuntime(cfg *GuardConfig) (string, error) {
 	preference := "auto"
 	if cfg != nil && strings.TrimSpace(cfg.ContainerRuntime) != "" {
@@ -429,16 +476,18 @@ func resolveContainerRuntime(cfg *GuardConfig) (string, error) {
 	}
 	switch preference {
 	case "auto":
-		if _, err := exec.LookPath("podman"); err == nil {
-			return "podman", nil
+		var reasons []string
+		for _, candidate := range []string{"podman", "docker"} {
+			if err := probeExecutableWithTimeout(candidate, "--version"); err == nil {
+				return candidate, nil
+			} else {
+				reasons = append(reasons, err.Error())
+			}
 		}
-		if _, err := exec.LookPath("docker"); err == nil {
-			return "docker", nil
-		}
-		return "", fmt.Errorf("no supported container runtime found (podman/docker)")
+		return "", fmt.Errorf("no supported container runtime available (podman/docker): %s", strings.Join(reasons, "; "))
 	case "podman", "docker":
-		if _, err := exec.LookPath(preference); err != nil {
-			return "", fmt.Errorf("container runtime %s not found", preference)
+		if err := probeExecutableWithTimeout(preference, "--version"); err != nil {
+			return "", err
 		}
 		return preference, nil
 	default:

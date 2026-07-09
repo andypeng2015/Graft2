@@ -41,6 +41,20 @@ object transfer.
 The current protocol version is **`1`**. The version is transmitted in the
 `Graft-Protocol` header on every request.
 
+### 1.1.1 Machine-Readable Contract
+
+The reference CLI exposes the supported protocol surface as machine-readable
+JSON:
+
+```bash
+graft protocol --json
+```
+
+The output includes the protocol version, headers, capabilities, endpoints,
+transport content types, server limit keys, client response read caps, object
+types, and remote error JSON shape. Server implementations SHOULD use this
+contract alongside this specification for conformance checks.
+
 ### 1.2 Transport
 
 All communication uses HTTP/1.1 or later over TLS (HTTPS). Servers MAY accept
@@ -138,6 +152,7 @@ uses them to constrain subsequent requests.
 | `shallow` | Client supports shallow clone boundaries |
 | `filter` | Client supports partial clone object filters |
 | `include-tag` | Client requests tag objects be included when fetching tagged commits |
+| `resumable-pack` | Client supports chunked pack upload with retry tokens |
 
 ### 3.2 Negotiation Process
 
@@ -149,7 +164,7 @@ uses them to constrain subsequent requests.
 4. The server MAY include a `Graft-Capabilities` response header indicating the
    agreed capabilities.
 
-The standard client advertises: `pack,zstd,sideband`.
+The standard client advertises: `pack,zstd,sideband,resumable-pack`.
 
 ### 3.3 Intersection
 
@@ -636,6 +651,73 @@ On success, the server returns HTTP 200.
 #### Response Limit
 
 The client reads at most **1 MB** from the response body.
+
+---
+
+### 5.7 Push Objects (Resumable Pack Mode)
+
+Uploads a zstd-compressed pack as independently hashed chunks. This endpoint is
+used when both client and server advertise `resumable-pack`.
+
+```
+POST {base}/objects/resumable
+```
+
+#### Request
+
+```http
+POST /graft/alice/myrepo/objects/resumable HTTP/1.1
+Host: orchard.dev
+Content-Type: application/x-graft-pack-chunk
+Content-Encoding: zstd
+Graft-Protocol: 1
+Graft-Capabilities: pack,zstd,sideband,resumable-pack
+Graft-Chunk-Index: 0
+Graft-Chunk-Count: 4
+Graft-Chunk-Offset: 0
+Graft-Chunk-SHA256: <sha256-of-this-compressed-chunk>
+Graft-Pack-SHA256: <sha256-of-complete-compressed-pack>
+Graft-Retry-Token: <opaque-token-from-previous-attempt>
+Authorization: Bearer graft_pat_abc123
+
+<compressed pack chunk bytes>
+```
+
+Required request headers:
+
+| Header | Description |
+|--------|-------------|
+| `Graft-Chunk-Index` | Zero-based chunk index |
+| `Graft-Chunk-Count` | Total number of chunks in this upload |
+| `Graft-Chunk-Offset` | Byte offset of this chunk in the compressed pack |
+| `Graft-Chunk-SHA256` | SHA-256 of the request body |
+| `Graft-Pack-SHA256` | SHA-256 of the complete compressed pack |
+
+`Graft-Retry-Token` is optional on the first request and SHOULD be sent on
+later chunks when the server returns one. Tokens are opaque to clients and let
+the server resume or deduplicate partial uploads safely.
+
+The server MUST verify each chunk hash before accepting the chunk. Once all
+chunks are present, it MUST verify `Graft-Pack-SHA256`, decompress the pack,
+decode the pack stream, and store only valid objects.
+
+#### Response
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  "upload_id": "upload_abc123",
+  "retry_token": "opaque-next-token",
+  "received": 4194304,
+  "complete": false
+}
+```
+
+On the final chunk, `complete` is `true`; clients MUST treat a missing or false
+final completion acknowledgement as an incomplete upload. The client reads at
+most **1 MB** from the response body.
 
 ---
 
@@ -1390,6 +1472,9 @@ The preferred transport uses the binary pack format with zstd compression.
   with optional `Content-Encoding: zstd`.
 - **Push:** `POST /objects` with `Content-Type: application/x-graft-pack` and
   `Content-Encoding: zstd`.
+- **Resumable push:** `POST /objects/resumable` with
+  `Content-Type: application/x-graft-pack-chunk`; each chunk includes SHA-256
+  chunk and full-pack hashes plus an optional retry token.
 
 #### Zstd Compression
 

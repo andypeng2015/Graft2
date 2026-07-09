@@ -219,6 +219,70 @@ func TestFetchIntoStoreUsesMultipleBatchRounds(t *testing.T) {
 	}
 }
 
+func TestFetchIntoStoreHonorsCachedServerMaxBatch(t *testing.T) {
+	localStore := object.NewStore(t.TempDir())
+	blobHash, err := localStore.WriteBlob(&object.Blob{Data: []byte("already local\n")})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var gotMaxObjects int
+	var batchCalls int
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/graft/alice/repo/objects/batch":
+			batchCalls++
+			var req struct {
+				MaxObjects int `json:"max_objects"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				http.Error(w, "invalid body", http.StatusBadRequest)
+				return
+			}
+			gotMaxObjects = req.MaxObjects
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"objects":   []any{},
+				"truncated": false,
+			})
+			return
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/graft/alice/repo/objects/"):
+			http.Error(w, "unexpected get", http.StatusInternalServerError)
+			return
+		default:
+			http.Error(w, "not found", http.StatusNotFound)
+		}
+	}))
+	defer ts.Close()
+
+	client, err := NewClient(ts.URL + "/graft/alice/repo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.serverLimits = &ServerLimits{MaxBatch: 2}
+
+	written, err := FetchIntoStoreWithConfig(
+		context.Background(),
+		client,
+		localStore,
+		[]object.Hash{blobHash},
+		nil,
+		FetchConfig{MaxBatchObjects: 100},
+	)
+	if err != nil {
+		t.Fatalf("FetchIntoStoreWithConfig: %v", err)
+	}
+	if written != 0 {
+		t.Fatalf("written = %d, want 0", written)
+	}
+	if gotMaxObjects != 2 {
+		t.Fatalf("max_objects = %d, want 2", gotMaxObjects)
+	}
+	if batchCalls != 1 {
+		t.Fatalf("batchCalls = %d, want 1", batchCalls)
+	}
+}
+
 func TestFetchIntoStoreRoundLimitExceeded(t *testing.T) {
 	remoteRoot := t.TempDir()
 	remoteStore := object.NewStore(remoteRoot)

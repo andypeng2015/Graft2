@@ -3,6 +3,8 @@ package remote
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path"
+	"strconv"
 	"strings"
 	"time"
 
@@ -138,6 +141,20 @@ type RefUpdate struct {
 	New  *object.Hash
 }
 
+// ResumablePackUploadOptions controls chunked pack upload.
+type ResumablePackUploadOptions struct {
+	ChunkSize  int
+	RetryToken string
+}
+
+// ResumablePackUploadResult describes a completed resumable pack upload.
+type ResumablePackUploadResult struct {
+	UploadID   string
+	RetryToken string
+	Chunks     int
+	Bytes      int
+}
+
 // ClientOptions configures the remote protocol client.
 type ClientOptions struct {
 	Timeout     time.Duration // HTTP client timeout (default 60s)
@@ -150,6 +167,11 @@ const (
 	responseLimitRefs    = 8 << 20  // 8MB
 	responseLimitBatch   = 64 << 20 // 64MB
 	responseLimitObject  = 32 << 20 // 32MB
+
+	listRefsPageLimit = 1024
+
+	defaultResumablePackChunkSize = 4 << 20
+	maxResumablePackChunkSize     = 64 << 20
 )
 
 // Client is a transport client for orchard's Graft protocol.
@@ -166,6 +188,18 @@ type Client struct {
 
 // ErrPackUploadUnsupported indicates the remote does not accept pack uploads.
 var ErrPackUploadUnsupported = errors.New("pack upload unsupported")
+
+// ErrRemoteResponseTooLarge indicates a remote response exceeded the client's
+// configured byte limit before it could be decoded safely.
+var ErrRemoteResponseTooLarge = errors.New("remote response exceeds byte limit")
+
+// ErrRemotePaginationLimitExceeded indicates a paginated remote endpoint did
+// not terminate within the client's page limit.
+var ErrRemotePaginationLimitExceeded = errors.New("remote pagination exceeded page limit")
+
+// ErrRemoteLimitExceeded indicates a local request would exceed limits
+// advertised by the remote server.
+var ErrRemoteLimitExceeded = errors.New("remote limit exceeded")
 
 // NewClient creates a remote protocol client with default options.
 //
@@ -299,7 +333,7 @@ func (c *Client) ListRefs(ctx context.Context) (map[string]object.Hash, error) {
 	cursor := ""
 	const pageLimit = 1000
 
-	for {
+	for page := 0; page < listRefsPageLimit; page++ {
 		u := c.endpoint.BaseURL + "/refs"
 		if cursor != "" {
 			u += "?cursor=" + url.QueryEscape(cursor) + "&limit=" + fmt.Sprintf("%d", pageLimit)
@@ -350,12 +384,12 @@ func (c *Client) ListRefs(ctx context.Context) (map[string]object.Hash, error) {
 		}
 
 		if page.Cursor == "" || page.Refs == nil {
-			break
+			return refs, nil
 		}
 		cursor = page.Cursor
 	}
 
-	return refs, nil
+	return nil, fmt.Errorf("%w: limit=%d", ErrRemotePaginationLimitExceeded, listRefsPageLimit)
 }
 
 // BatchObjects fetches missing objects reachable from wants and not in haves.
@@ -363,25 +397,26 @@ func (c *Client) BatchObjects(ctx context.Context, wants, haves []object.Hash, m
 	if len(wants) == 0 {
 		return nil, false, fmt.Errorf("at least one want hash is required")
 	}
+	maxObjects = c.effectiveMaxBatchObjects(maxObjects)
+
+	validatedWants, err := validateHashList(wants, "want")
+	if err != nil {
+		return nil, false, err
+	}
+	validatedHaves, err := validateHashList(haves, "have")
+	if err != nil {
+		return nil, false, err
+	}
+	validatedHaves = c.limitHaveHashesForPayload(validatedHaves)
 
 	reqBody := struct {
 		Wants      []string `json:"wants"`
 		Haves      []string `json:"haves,omitempty"`
 		MaxObjects int      `json:"max_objects,omitempty"`
 	}{
-		Wants:      make([]string, 0, len(wants)),
-		Haves:      make([]string, 0, len(haves)),
+		Wants:      hashStrings(validatedWants),
+		Haves:      hashStrings(validatedHaves),
 		MaxObjects: maxObjects,
-	}
-	for _, h := range wants {
-		if strings.TrimSpace(string(h)) != "" {
-			reqBody.Wants = append(reqBody.Wants, string(h))
-		}
-	}
-	for _, h := range haves {
-		if strings.TrimSpace(string(h)) != "" {
-			reqBody.Haves = append(reqBody.Haves, string(h))
-		}
 	}
 	if len(reqBody.Wants) == 0 {
 		return nil, false, fmt.Errorf("at least one non-empty want hash is required")
@@ -389,6 +424,9 @@ func (c *Client) BatchObjects(ctx context.Context, wants, haves []object.Hash, m
 
 	payload, err := json.Marshal(reqBody)
 	if err != nil {
+		return nil, false, err
+	}
+	if err := c.checkPayloadLimit(len(payload), "batch object request"); err != nil {
 		return nil, false, err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint.BaseURL+"/objects/batch", bytes.NewReader(payload))
@@ -459,6 +497,17 @@ func (c *Client) BatchObjectsPackShallow(ctx context.Context, wants, haves []obj
 	if len(wants) == 0 {
 		return nil, fmt.Errorf("at least one want hash is required")
 	}
+	maxObjects = c.effectiveMaxBatchObjects(maxObjects)
+
+	validatedWants, err := validateHashList(wants, "want")
+	if err != nil {
+		return nil, err
+	}
+	validatedHaves, err := validateHashList(haves, "have")
+	if err != nil {
+		return nil, err
+	}
+	validatedHaves = c.limitHaveHashesForPayload(validatedHaves)
 
 	reqBody := struct {
 		Wants      []string `json:"wants"`
@@ -469,19 +518,9 @@ func (c *Client) BatchObjectsPackShallow(ctx context.Context, wants, haves []obj
 		Shallow    []string `json:"shallow,omitempty"`
 		Filter     string   `json:"filter,omitempty"`
 	}{
-		Wants:      make([]string, 0, len(wants)),
-		Haves:      make([]string, 0, len(haves)),
+		Wants:      hashStrings(validatedWants),
+		Haves:      hashStrings(validatedHaves),
 		MaxObjects: maxObjects,
-	}
-	for _, h := range wants {
-		if strings.TrimSpace(string(h)) != "" {
-			reqBody.Wants = append(reqBody.Wants, string(h))
-		}
-	}
-	for _, h := range haves {
-		if strings.TrimSpace(string(h)) != "" {
-			reqBody.Haves = append(reqBody.Haves, string(h))
-		}
 	}
 	if len(reqBody.Wants) == 0 {
 		return nil, fmt.Errorf("at least one non-empty want hash is required")
@@ -491,15 +530,18 @@ func (c *Client) BatchObjectsPackShallow(ctx context.Context, wants, haves []obj
 		reqBody.Depth = shallowOpts.Depth
 		reqBody.Deepen = shallowOpts.Deepen
 		reqBody.Filter = shallowOpts.Filter
-		for _, h := range shallowOpts.Shallow {
-			if strings.TrimSpace(string(h)) != "" {
-				reqBody.Shallow = append(reqBody.Shallow, string(h))
-			}
+		validatedShallow, err := validateHashList(shallowOpts.Shallow, "shallow")
+		if err != nil {
+			return nil, err
 		}
+		reqBody.Shallow = hashStrings(validatedShallow)
 	}
 
 	payload, err := json.Marshal(reqBody)
 	if err != nil {
+		return nil, err
+	}
+	if err := c.checkPayloadLimit(len(payload), "batch object request"); err != nil {
 		return nil, err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint.BaseURL+"/objects/batch", bytes.NewReader(payload))
@@ -516,9 +558,9 @@ func (c *Client) BatchObjectsPackShallow(ctx context.Context, wants, haves []obj
 		return nil, err
 	}
 	defer resp.Body.Close()
-	c.cacheServerLimits(resp)
+	c.cacheServerMetadata(resp)
 
-	body, readErr := io.ReadAll(io.LimitReader(resp.Body, responseLimitBatch))
+	body, readErr := readAllLimited(resp.Body, c.effectiveResponseLimit(responseLimitBatch))
 	if readErr != nil {
 		return nil, readErr
 	}
@@ -540,7 +582,11 @@ func (c *Client) BatchObjectsPackShallow(ctx context.Context, wants, haves []obj
 		for _, s := range strings.Split(raw, ",") {
 			s = strings.TrimSpace(s)
 			if s != "" {
-				shallowHashes = append(shallowHashes, object.Hash(s))
+				h := object.Hash(s)
+				if err := ValidateHash(h); err != nil {
+					return nil, fmt.Errorf("invalid X-Shallow hash: %w", err)
+				}
+				shallowHashes = append(shallowHashes, h)
 			}
 		}
 	}
@@ -581,7 +627,11 @@ func (c *Client) BatchObjectsPackShallow(ctx context.Context, wants, haves []obj
 	for _, s := range jsonResp.Shallow {
 		s = strings.TrimSpace(s)
 		if s != "" {
-			shallowHashes = append(shallowHashes, object.Hash(s))
+			h := object.Hash(s)
+			if err := ValidateHash(h); err != nil {
+				return nil, fmt.Errorf("invalid shallow hash in batch response: %w", err)
+			}
+			shallowHashes = append(shallowHashes, h)
 		}
 	}
 
@@ -610,6 +660,9 @@ func (c *Client) GetObject(ctx context.Context, hash object.Hash) (ObjectRecord,
 	if hash == "" {
 		return ObjectRecord{}, fmt.Errorf("object hash is required")
 	}
+	if err := ValidateHash(hash); err != nil {
+		return ObjectRecord{}, fmt.Errorf("invalid object hash: %w", err)
+	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.endpoint.BaseURL+"/objects/"+string(hash), nil)
 	if err != nil {
@@ -622,8 +675,9 @@ func (c *Client) GetObject(ctx context.Context, hash object.Hash) (ObjectRecord,
 		return ObjectRecord{}, err
 	}
 	defer resp.Body.Close()
+	c.cacheServerMetadata(resp)
 
-	body, readErr := io.ReadAll(io.LimitReader(resp.Body, 32<<20))
+	body, readErr := readAllLimited(resp.Body, c.effectiveObjectResponseLimit(responseLimitObject))
 	if readErr != nil {
 		return ObjectRecord{}, readErr
 	}
@@ -651,6 +705,9 @@ func (c *Client) PushObjects(ctx context.Context, objects []ObjectRecord) error 
 	if len(objects) == 0 {
 		return nil
 	}
+	if err := c.checkObjectUploadLimits(objects); err != nil {
+		return err
+	}
 
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
@@ -675,6 +732,9 @@ func (c *Client) PushObjects(ctx context.Context, objects []ObjectRecord) error 
 			return fmt.Errorf("push object %d: encode: %w", i, err)
 		}
 	}
+	if err := c.checkPayloadLimit(buf.Len(), "object upload"); err != nil {
+		return err
+	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint.BaseURL+"/objects", bytes.NewReader(buf.Bytes()))
 	if err != nil {
@@ -692,6 +752,9 @@ func (c *Client) PushObjects(ctx context.Context, objects []ObjectRecord) error 
 func (c *Client) PushObjectsPack(ctx context.Context, objects []ObjectRecord) error {
 	if len(objects) == 0 {
 		return nil
+	}
+	if err := c.checkObjectUploadLimits(objects); err != nil {
+		return err
 	}
 
 	for i, obj := range objects {
@@ -714,6 +777,9 @@ func (c *Client) PushObjectsPack(ctx context.Context, objects []ObjectRecord) er
 	if err != nil {
 		return fmt.Errorf("compress pack: %w", err)
 	}
+	if err := c.checkPayloadLimit(len(compressed), "pack upload"); err != nil {
+		return err
+	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint.BaseURL+"/objects", bytes.NewReader(compressed))
 	if err != nil {
@@ -730,7 +796,7 @@ func (c *Client) PushObjectsPack(ctx context.Context, objects []ObjectRecord) er
 	defer resp.Body.Close()
 	c.cacheServerMetadata(resp)
 
-	body, readErr := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	body, readErr := readAllLimited(resp.Body, c.effectiveResponseLimit(1<<20))
 	if readErr != nil {
 		return readErr
 	}
@@ -753,6 +819,155 @@ func (c *Client) PushObjectsPack(ctx context.Context, objects []ObjectRecord) er
 	}
 
 	return nil
+}
+
+// PushObjectsPackResumable uploads objects using zstd-compressed pack transport
+// split into independently hashed chunks. The returned retry token can be used
+// by callers to resume after an interrupted upload when the server supports it.
+func (c *Client) PushObjectsPackResumable(ctx context.Context, objects []ObjectRecord, opts ResumablePackUploadOptions) (*ResumablePackUploadResult, error) {
+	if len(objects) == 0 {
+		return &ResumablePackUploadResult{}, nil
+	}
+	if err := c.checkObjectUploadLimits(objects); err != nil {
+		return nil, err
+	}
+
+	_, compressed, err := encodeCompressedPackForUpload(objects)
+	if err != nil {
+		return nil, err
+	}
+
+	chunkSize := opts.ChunkSize
+	if chunkSize <= 0 {
+		chunkSize = defaultResumablePackChunkSize
+	}
+	if chunkSize > maxResumablePackChunkSize {
+		return nil, fmt.Errorf("%w: resumable pack chunk size %d exceeds maximum %d", ErrRemoteLimitExceeded, chunkSize, maxResumablePackChunkSize)
+	}
+	if limits := c.ServerLimits(); limits != nil && limits.MaxPayload > 0 && chunkSize > limits.MaxPayload {
+		chunkSize = limits.MaxPayload
+	}
+	if chunkSize <= 0 {
+		return nil, fmt.Errorf("resumable pack chunk size must be > 0")
+	}
+
+	packHash := sha256Hex(compressed)
+	chunks := (len(compressed) + chunkSize - 1) / chunkSize
+	if chunks == 0 {
+		chunks = 1
+	}
+
+	token := strings.TrimSpace(opts.RetryToken)
+	result := &ResumablePackUploadResult{
+		RetryToken: token,
+		Chunks:     chunks,
+		Bytes:      len(compressed),
+	}
+	for i, offset := 0, 0; i < chunks; i, offset = i+1, offset+chunkSize {
+		end := offset + chunkSize
+		if end > len(compressed) {
+			end = len(compressed)
+		}
+		chunk := compressed[offset:end]
+		resp, err := c.pushResumablePackChunk(ctx, chunk, resumablePackChunkRequest{
+			Index:      i,
+			Count:      chunks,
+			Offset:     offset,
+			PackHash:   packHash,
+			ChunkHash:  sha256Hex(chunk),
+			RetryToken: token,
+		})
+		if err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(resp.UploadID) != "" {
+			result.UploadID = strings.TrimSpace(resp.UploadID)
+		}
+		if strings.TrimSpace(resp.RetryToken) != "" {
+			token = strings.TrimSpace(resp.RetryToken)
+			result.RetryToken = token
+		}
+		if resp.Received > 0 && resp.Received != len(chunk) {
+			return nil, fmt.Errorf("resumable pack chunk %d acknowledged %d bytes, sent %d", i, resp.Received, len(chunk))
+		}
+		if i == chunks-1 && !resp.Complete {
+			return nil, fmt.Errorf("resumable pack upload incomplete after final chunk")
+		}
+	}
+	return result, nil
+}
+
+type resumablePackChunkRequest struct {
+	Index      int
+	Count      int
+	Offset     int
+	PackHash   string
+	ChunkHash  string
+	RetryToken string
+}
+
+type resumablePackChunkResponse struct {
+	UploadID   string `json:"upload_id,omitempty"`
+	RetryToken string `json:"retry_token,omitempty"`
+	Received   int    `json:"received,omitempty"`
+	Complete   bool   `json:"complete,omitempty"`
+}
+
+func (c *Client) pushResumablePackChunk(ctx context.Context, chunk []byte, meta resumablePackChunkRequest) (resumablePackChunkResponse, error) {
+	if err := c.checkPayloadLimit(len(chunk), "resumable pack chunk"); err != nil {
+		return resumablePackChunkResponse{}, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint.BaseURL+"/objects/resumable", bytes.NewReader(chunk))
+	if err != nil {
+		return resumablePackChunkResponse{}, err
+	}
+	req.Header.Set("Content-Type", "application/x-graft-pack-chunk")
+	req.Header.Set("Content-Encoding", "zstd")
+	req.Header.Set("Graft-Chunk-Index", strconv.Itoa(meta.Index))
+	req.Header.Set("Graft-Chunk-Count", strconv.Itoa(meta.Count))
+	req.Header.Set("Graft-Chunk-Offset", strconv.Itoa(meta.Offset))
+	req.Header.Set("Graft-Chunk-SHA256", meta.ChunkHash)
+	req.Header.Set("Graft-Pack-SHA256", meta.PackHash)
+	if strings.TrimSpace(meta.RetryToken) != "" {
+		req.Header.Set("Graft-Retry-Token", strings.TrimSpace(meta.RetryToken))
+	}
+
+	body, err := c.doWithLimit(req, http.StatusOK, 1<<20, "application/json")
+	if err != nil {
+		return resumablePackChunkResponse{}, err
+	}
+	var resp resumablePackChunkResponse
+	if len(strings.TrimSpace(string(body))) == 0 {
+		return resp, nil
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return resumablePackChunkResponse{}, fmt.Errorf("decode resumable pack response: %w", err)
+	}
+	return resp, nil
+}
+
+func encodeCompressedPackForUpload(objects []ObjectRecord) ([]byte, []byte, error) {
+	records := append([]ObjectRecord(nil), objects...)
+	for i, obj := range records {
+		if _, err := parseObjectType(string(obj.Type)); err != nil {
+			return nil, nil, fmt.Errorf("push object %d: %w", i, err)
+		}
+		computedHash := object.HashObject(obj.Type, obj.Data)
+		if provided := object.Hash(strings.TrimSpace(string(obj.Hash))); provided != "" && provided != computedHash {
+			return nil, nil, fmt.Errorf("push object %d: hash mismatch (provided %s, computed %s)", i, provided, computedHash)
+		}
+		records[i].Hash = computedHash
+	}
+
+	packData, err := EncodePackTransportToBytes(records)
+	if err != nil {
+		return nil, nil, fmt.Errorf("encode pack: %w", err)
+	}
+	compressed, err := compressZstd(packData)
+	if err != nil {
+		return nil, nil, fmt.Errorf("compress pack: %w", err)
+	}
+	return packData, compressed, nil
 }
 
 // UpdateRefs applies atomic CAS updates on the remote refs.
@@ -779,11 +994,21 @@ func (c *Client) UpdateRefs(ctx context.Context, updates []RefUpdate) (map[strin
 		var oldStr *string
 		if u.Old != nil {
 			v := strings.TrimSpace(string(*u.Old))
+			if v != "" {
+				if err := ValidateHash(object.Hash(v)); err != nil {
+					return nil, fmt.Errorf("invalid old hash for ref %q: %w", name, err)
+				}
+			}
 			oldStr = &v
 		}
 		var newStr *string
 		if u.New != nil {
 			v := strings.TrimSpace(string(*u.New))
+			if v != "" {
+				if err := ValidateHash(object.Hash(v)); err != nil {
+					return nil, fmt.Errorf("invalid new hash for ref %q: %w", name, err)
+				}
+			}
 			newStr = &v
 		} else {
 			empty := ""
@@ -833,7 +1058,7 @@ func (c *Client) doWithLimit(req *http.Request, expectedStatus int, maxBytes int
 	defer resp.Body.Close()
 	c.cacheServerMetadata(resp)
 
-	body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxBytes))
+	body, readErr := readAllLimited(resp.Body, c.effectiveResponseLimit(maxBytes))
 	if readErr != nil {
 		return nil, readErr
 	}
@@ -863,6 +1088,149 @@ func (c *Client) doWithLimit(req *http.Request, expectedStatus int, maxBytes int
 // do is a backward-compatible wrapper using default limits.
 func (c *Client) do(req *http.Request, expectedStatus int) ([]byte, error) {
 	return c.doWithLimit(req, expectedStatus, responseLimitDefault, "")
+}
+
+func readAllLimited(r io.Reader, maxBytes int64) ([]byte, error) {
+	if maxBytes < 0 {
+		return nil, fmt.Errorf("response byte limit must be >= 0 (got %d)", maxBytes)
+	}
+	body, err := io.ReadAll(io.LimitReader(r, maxBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(body)) > maxBytes {
+		return nil, fmt.Errorf("%w: limit=%d", ErrRemoteResponseTooLarge, maxBytes)
+	}
+	return body, nil
+}
+
+func (c *Client) effectiveMaxBatchObjects(requested int) int {
+	if requested <= 0 {
+		if limits := c.ServerLimits(); limits != nil && limits.MaxBatch > 0 {
+			return limits.MaxBatch
+		}
+		return requested
+	}
+	if limits := c.ServerLimits(); limits != nil && limits.MaxBatch > 0 && limits.MaxBatch < requested {
+		return limits.MaxBatch
+	}
+	return requested
+}
+
+func (c *Client) effectiveResponseLimit(defaultLimit int64) int64 {
+	if defaultLimit <= 0 {
+		return defaultLimit
+	}
+	if limits := c.ServerLimits(); limits != nil && limits.MaxPayload > 0 && int64(limits.MaxPayload) < defaultLimit {
+		return int64(limits.MaxPayload)
+	}
+	return defaultLimit
+}
+
+func (c *Client) effectiveObjectResponseLimit(defaultLimit int64) int64 {
+	limit := c.effectiveResponseLimit(defaultLimit)
+	if limits := c.ServerLimits(); limits != nil && limits.MaxObject > 0 && int64(limits.MaxObject) < limit {
+		return int64(limits.MaxObject)
+	}
+	return limit
+}
+
+func (c *Client) checkPayloadLimit(size int, operation string) error {
+	limits := c.ServerLimits()
+	if limits == nil || limits.MaxPayload <= 0 || size <= limits.MaxPayload {
+		return nil
+	}
+	return fmt.Errorf("%w: %s payload %d exceeds remote max_payload %d", ErrRemoteLimitExceeded, operation, size, limits.MaxPayload)
+}
+
+func (c *Client) checkObjectUploadLimits(objects []ObjectRecord) error {
+	limits := c.ServerLimits()
+	if limits == nil {
+		return nil
+	}
+	if limits.MaxBatch > 0 && len(objects) > limits.MaxBatch {
+		return fmt.Errorf("%w: object batch has %d objects, remote max_batch is %d", ErrRemoteLimitExceeded, len(objects), limits.MaxBatch)
+	}
+	if limits.MaxObject <= 0 {
+		return nil
+	}
+	for _, obj := range objects {
+		if len(obj.Data) > limits.MaxObject {
+			hash := obj.Hash
+			if hash == "" && obj.Type != "" {
+				hash = object.HashObject(obj.Type, obj.Data)
+			}
+			return fmt.Errorf("%w: object %s is %d bytes, remote max_object is %d", ErrRemoteLimitExceeded, shortRemoteHash(hash), len(obj.Data), limits.MaxObject)
+		}
+	}
+	return nil
+}
+
+func (c *Client) limitHaveHashesForPayload(haves []object.Hash) []object.Hash {
+	limits := c.ServerLimits()
+	if limits == nil || limits.MaxPayload <= 0 {
+		return haves
+	}
+	max := maxHaveHashesForPayload(limits.MaxPayload)
+	if max <= 0 {
+		return nil
+	}
+	if len(haves) <= max {
+		return haves
+	}
+	return haves[len(haves)-max:]
+}
+
+func maxHaveHashesForPayload(maxPayload int) int {
+	const (
+		batchPayloadFixedOverhead = 512
+		batchHashBudgetBytes      = 80
+	)
+	remaining := maxPayload - batchPayloadFixedOverhead
+	if remaining <= 0 {
+		return 0
+	}
+	return remaining / batchHashBudgetBytes
+}
+
+func shortRemoteHash(h object.Hash) string {
+	s := strings.TrimSpace(string(h))
+	if len(s) > 12 {
+		return s[:12]
+	}
+	if s == "" {
+		return "<unknown>"
+	}
+	return s
+}
+
+func sha256Hex(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
+
+func validateHashList(hashes []object.Hash, label string) ([]object.Hash, error) {
+	out := make([]object.Hash, 0, len(hashes))
+	for _, h := range hashes {
+		s := strings.TrimSpace(string(h))
+		if s == "" {
+			continue
+		}
+		hash := object.Hash(s)
+		if err := ValidateHash(hash); err != nil {
+			return nil, fmt.Errorf("invalid %s hash %q: %w", label, s, err)
+		}
+		out = append(out, hash)
+	}
+	return out, nil
+}
+
+func hashStrings(hashes []object.Hash) []string {
+	out := make([]string, 0, len(hashes))
+	for _, h := range hashes {
+		out = append(out, string(h))
+	}
+	return out
 }
 
 func (c *Client) applyAuth(req *http.Request) {

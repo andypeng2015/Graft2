@@ -1,6 +1,7 @@
 package remote
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/odvcencio/graft/pkg/object"
@@ -74,6 +75,32 @@ func TestCapabilitiesString(t *testing.T) {
 	}
 }
 
+func TestCapabilitiesAddZeroValue(t *testing.T) {
+	var caps Capabilities
+	caps.Add(" pack ")
+	caps.Add("")
+	if !caps.Has("pack") {
+		t.Fatal("zero-value Add did not record capability")
+	}
+	if caps.Len() != 1 {
+		t.Fatalf("Len() = %d, want 1", caps.Len())
+	}
+}
+
+func TestCapabilitiesNamesSorted(t *testing.T) {
+	caps := ParseCapabilities("zstd,pack,sideband")
+	got := caps.Names()
+	want := []string{"pack", "sideband", "zstd"}
+	if len(got) != len(want) {
+		t.Fatalf("Names() len = %d, want %d (%#v)", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("Names()[%d] = %q, want %q (all: %#v)", i, got[i], want[i], got)
+		}
+	}
+}
+
 func TestParseLimitsComplete(t *testing.T) {
 	limits := ParseLimits("max_batch=50000,max_payload=67108864,max_object=33554432")
 	if limits.MaxBatch != 50000 {
@@ -126,4 +153,71 @@ func TestRemoteErrorFormat(t *testing.T) {
 	if re.Error() != "ref not found (ref_not_found): heads/main" {
 		t.Fatalf("Error() = %q", re.Error())
 	}
+}
+
+func TestSupportedProtocolContractMatchesClientConstants(t *testing.T) {
+	contract := SupportedProtocolContract()
+	if contract.ProtocolVersion != ProtocolVersion {
+		t.Fatalf("ProtocolVersion = %q, want %q", contract.ProtocolVersion, ProtocolVersion)
+	}
+	if got := strings.Join(contract.ClientCapabilities, ","); got != ParseCapabilities(ClientCapabilities).String() {
+		t.Fatalf("ClientCapabilities = %q, want %q", got, ParseCapabilities(ClientCapabilities).String())
+	}
+	if !protocolHeaderExists(contract.Headers, headerProtocol, "request", true) {
+		t.Fatalf("contract headers missing required request %s: %#v", headerProtocol, contract.Headers)
+	}
+	if !protocolEndpointExists(contract.Endpoints, "GET", "{base}/refs") {
+		t.Fatalf("contract endpoints missing GET refs: %#v", contract.Endpoints)
+	}
+	if !protocolEndpointExists(contract.Endpoints, "POST", "{base}/objects/batch") {
+		t.Fatalf("contract endpoints missing batch objects: %#v", contract.Endpoints)
+	}
+	if !protocolResponseLimitExists(contract.ResponseLimits, "refs", responseLimitRefs) {
+		t.Fatalf("contract response limits missing refs=%d: %#v", responseLimitRefs, contract.ResponseLimits)
+	}
+	if !protocolResponseLimitExists(contract.ResponseLimits, "batchObjects", responseLimitBatch) {
+		t.Fatalf("contract response limits missing batchObjects=%d: %#v", responseLimitBatch, contract.ResponseLimits)
+	}
+	if !stringSliceContains(contract.ObjectTypes, string(object.TypeEntityList)) {
+		t.Fatalf("contract object types missing %q: %#v", object.TypeEntityList, contract.ObjectTypes)
+	}
+	if contract.ErrorShape.CodeField != "code" || contract.ErrorShape.MessageField != "error" || contract.ErrorShape.DetailField != "detail" {
+		t.Fatalf("unexpected error shape: %#v", contract.ErrorShape)
+	}
+}
+
+func protocolHeaderExists(headers []ProtocolHeader, name, direction string, required bool) bool {
+	for _, header := range headers {
+		if header.Name == name && strings.Contains(header.Direction, direction) && header.Required == required {
+			return true
+		}
+	}
+	return false
+}
+
+func protocolEndpointExists(endpoints []ProtocolEndpoint, method, path string) bool {
+	for _, endpoint := range endpoints {
+		if endpoint.Method == method && endpoint.Path == path {
+			return true
+		}
+	}
+	return false
+}
+
+func protocolResponseLimitExists(limits []ProtocolResponseLimit, name string, bytes int64) bool {
+	for _, limit := range limits {
+		if limit.Name == name && limit.Bytes == bytes {
+			return true
+		}
+	}
+	return false
+}
+
+func stringSliceContains(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }

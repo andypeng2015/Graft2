@@ -90,6 +90,7 @@ func FetchIntoStoreShallow(ctx context.Context, c *Client, store *object.Store, 
 	if err != nil {
 		return nil, err
 	}
+	cfg = applyServerLimitsToFetchConfig(cfg, c)
 
 	roots := uniqueHashes(wants)
 	if len(roots) == 0 {
@@ -130,6 +131,7 @@ func FetchIntoStoreShallow(ctx context.Context, c *Client, store *object.Store, 
 			if err != nil {
 				return nil, err
 			}
+			cfg = applyServerLimitsToFetchConfig(cfg, c)
 			batchObjects = result.Objects
 			truncated = result.Truncated
 			for _, h := range result.Shallow {
@@ -141,6 +143,7 @@ func FetchIntoStoreShallow(ctx context.Context, c *Client, store *object.Store, 
 			if err != nil {
 				return nil, err
 			}
+			cfg = applyServerLimitsToFetchConfig(cfg, c)
 		}
 
 		newInRound := 0
@@ -229,6 +232,25 @@ func resolveFetchConfig(cfg FetchConfig) (FetchConfig, error) {
 	out.ShallowState = cfg.ShallowState
 
 	return out, nil
+}
+
+func applyServerLimitsToFetchConfig(cfg FetchConfig, c *Client) FetchConfig {
+	if c == nil {
+		return cfg
+	}
+	limits := c.ServerLimits()
+	if limits == nil {
+		return cfg
+	}
+	if limits.MaxBatch > 0 && limits.MaxBatch < cfg.MaxBatchObjects {
+		cfg.MaxBatchObjects = limits.MaxBatch
+	}
+	if limits.MaxPayload > 0 {
+		if maxHaves := maxHaveHashesForPayload(limits.MaxPayload); maxHaves > 0 && maxHaves < cfg.MaxBatchHaveHashes {
+			cfg.MaxBatchHaveHashes = maxHaves
+		}
+	}
+	return cfg
 }
 
 func initKnownHaves(haves []object.Hash) ([]object.Hash, map[object.Hash]struct{}) {

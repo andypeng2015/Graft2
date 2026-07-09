@@ -10,6 +10,16 @@ import (
 
 // GC packs loose objects reachable from refs.
 func (r *Repo) GC() (*object.GCSummary, error) {
+	var summary *object.GCSummary
+	err := r.withRepositoryLock("gc", func() error {
+		var gcErr error
+		summary, gcErr = r.gc()
+		return gcErr
+	})
+	return summary, err
+}
+
+func (r *Repo) gc() (*object.GCSummary, error) {
 	refs, err := r.ListRefs("")
 	if err != nil {
 		return nil, err

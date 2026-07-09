@@ -16,6 +16,7 @@ import (
 const (
 	currentConfigVersion = 1
 	configFileName       = ".graftconfig"
+	secureConfigFileMode = 0o600
 )
 
 // Config stores user-wide graft settings and credentials.
@@ -49,6 +50,15 @@ type Config struct {
 	Coord           CoordConfig               `json:"coord,omitempty"`
 }
 
+type PermissionStatus struct {
+	Path    string
+	Exists  bool
+	Mode    os.FileMode
+	Secure  bool
+	Warning string
+	Repair  string
+}
+
 // Load reads ~/.graftconfig. Missing file returns an empty config.
 func Load() (*Config, error) {
 	path, err := path()
@@ -70,6 +80,35 @@ func Load() (*Config, error) {
 	return cfg, nil
 }
 
+// CheckPermissions reports whether ~/.graftconfig is private enough for stored
+// credentials. Missing config is considered secure.
+func CheckPermissions() (PermissionStatus, error) {
+	target, err := path()
+	if err != nil {
+		return PermissionStatus{}, err
+	}
+	status := PermissionStatus{
+		Path:   target,
+		Secure: true,
+	}
+	info, err := os.Stat(target)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return status, nil
+		}
+		return status, fmt.Errorf("stat user config: %w", err)
+	}
+	status.Exists = true
+	status.Mode = info.Mode().Perm()
+	if status.Mode&0o077 == 0 {
+		return status, nil
+	}
+	status.Secure = false
+	status.Repair = fmt.Sprintf("chmod %03o %s", secureConfigFileMode, target)
+	status.Warning = fmt.Sprintf("user config %s has permissions %s; expected -rw------- for stored credentials", target, status.Mode.String())
+	return status, nil
+}
+
 // Save atomically writes ~/.graftconfig with mode 0600.
 func Save(cfg *Config) error {
 	if cfg == nil {
@@ -88,7 +127,7 @@ func Save(cfg *Config) error {
 		return fmt.Errorf("write user config: tmpfile: %w", err)
 	}
 	tmpPath := tmp.Name()
-	if err := tmp.Chmod(0o600); err != nil {
+	if err := tmp.Chmod(secureConfigFileMode); err != nil {
 		tmp.Close()
 		_ = os.Remove(tmpPath)
 		return fmt.Errorf("write user config: chmod: %w", err)
@@ -114,7 +153,7 @@ func Save(cfg *Config) error {
 		_ = os.Remove(tmpPath)
 		return fmt.Errorf("write user config: rename: %w", err)
 	}
-	if err := os.Chmod(target, 0o600); err != nil {
+	if err := os.Chmod(target, secureConfigFileMode); err != nil {
 		return fmt.Errorf("write user config: chmod final: %w", err)
 	}
 	return nil

@@ -244,6 +244,65 @@ func TestCheckout_DetachedHead(t *testing.T) {
 	}
 }
 
+func TestCheckoutRecordsHEADReflogAndPreviousBranch(t *testing.T) {
+	r := initRepoWithFile(t, "main.go", []byte("package main\n\nfunc main() { mainVersion() }\n"))
+
+	initial, err := r.Commit("initial commit", "test-author")
+	if err != nil {
+		t.Fatalf("Commit initial: %v", err)
+	}
+	if err := r.CreateBranch("feature", initial); err != nil {
+		t.Fatalf("CreateBranch(feature): %v", err)
+	}
+
+	mainPath := filepath.Join(r.RootDir, "main.go")
+	if err := os.WriteFile(mainPath, []byte("package main\n\nfunc main() { nextVersion() }\n"), 0o644); err != nil {
+		t.Fatalf("write main.go: %v", err)
+	}
+	if err := r.Add([]string{"main.go"}); err != nil {
+		t.Fatalf("Add main.go: %v", err)
+	}
+	if _, err := r.Commit("main update", "test-author"); err != nil {
+		t.Fatalf("Commit main update: %v", err)
+	}
+
+	if err := r.Checkout("feature"); err != nil {
+		t.Fatalf("Checkout(feature): %v", err)
+	}
+	entries, err := r.ReadHEADReflog(10)
+	if err != nil {
+		t.Fatalf("ReadHEADReflog: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("HEAD reflog entries = %d, want 1", len(entries))
+	}
+	if entries[0].Ref != "HEAD" {
+		t.Fatalf("HEAD reflog ref = %q, want HEAD", entries[0].Ref)
+	}
+	if entries[0].Reason != "checkout: moving from main to feature" {
+		t.Fatalf("HEAD reflog reason = %q", entries[0].Reason)
+	}
+
+	previous, err := r.PreviousCheckoutBranch()
+	if err != nil {
+		t.Fatalf("PreviousCheckoutBranch: %v", err)
+	}
+	if previous != "main" {
+		t.Fatalf("previous branch = %q, want main", previous)
+	}
+
+	if err := r.Checkout(previous); err != nil {
+		t.Fatalf("Checkout(previous): %v", err)
+	}
+	previous, err = r.PreviousCheckoutBranch()
+	if err != nil {
+		t.Fatalf("PreviousCheckoutBranch after return: %v", err)
+	}
+	if previous != "feature" {
+		t.Fatalf("previous branch after return = %q, want feature", previous)
+	}
+}
+
 // Test 6: Checkout handles subdirectories correctly.
 func TestCheckout_Subdirectories(t *testing.T) {
 	dir := t.TempDir()

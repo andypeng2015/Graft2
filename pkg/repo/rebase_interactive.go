@@ -1,7 +1,9 @@
 package repo
 
 import (
+	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -42,9 +44,68 @@ func (e *ErrRebaseEditStop) Error() string {
 		shortHash(e.CommitHash), commitTitle(e.Message))
 }
 
+// InteractiveRebaseOptions controls process IO for interactive rebase editors
+// and todo exec commands. Zero values preserve legacy terminal behavior.
+type InteractiveRebaseOptions struct {
+	Context context.Context
+	Stdin   io.Reader
+	Stdout  io.Writer
+	Stderr  io.Writer
+
+	// HookOptions controls hooks that may run while continuing an interactive
+	// rebase after a conflict. When unset, it is derived from the IO fields.
+	HookOptions HookRunOptions
+}
+
+func (opts InteractiveRebaseOptions) context() context.Context {
+	if opts.Context != nil {
+		return opts.Context
+	}
+	return context.Background()
+}
+
+func (opts InteractiveRebaseOptions) stdin() io.Reader {
+	if opts.Stdin != nil {
+		return opts.Stdin
+	}
+	return os.Stdin
+}
+
+func (opts InteractiveRebaseOptions) stdout() io.Writer {
+	if opts.Stdout != nil {
+		return opts.Stdout
+	}
+	return os.Stdout
+}
+
+func (opts InteractiveRebaseOptions) stderr() io.Writer {
+	if opts.Stderr != nil {
+		return opts.Stderr
+	}
+	return os.Stderr
+}
+
+func (opts InteractiveRebaseOptions) hookRunOptions() HookRunOptions {
+	if opts.HookOptions.Context != nil || opts.HookOptions.Stdout != nil || opts.HookOptions.Stderr != nil || opts.HookOptions.WarningWriter != nil {
+		return opts.HookOptions
+	}
+	return HookRunOptions{
+		Context:       opts.Context,
+		Stdout:        opts.Stdout,
+		Stderr:        opts.Stderr,
+		WarningWriter: opts.Stderr,
+	}
+}
+
 // RebaseInteractive starts an interactive rebase, opening the user's editor
 // to edit the todo list before executing it.
 func (r *Repo) RebaseInteractive(upstream string) error {
+	return r.RebaseInteractiveWithOptions(upstream, InteractiveRebaseOptions{})
+}
+
+// RebaseInteractiveWithOptions starts an interactive rebase with explicit
+// editor and todo exec process IO.
+func (r *Repo) RebaseInteractiveWithOptions(upstream string, opts InteractiveRebaseOptions) error {
 	if r.isRebaseInProgress() {
 		return ErrRebaseInProgress
 	}
@@ -103,24 +164,7 @@ func (r *Repo) RebaseInteractive(upstream string) error {
 		return fmt.Errorf("rebase: close todo file: %w", err)
 	}
 
-	// Open editor.
-	editor := os.Getenv("VISUAL")
-	if editor == "" {
-		editor = os.Getenv("EDITOR")
-	}
-	if editor == "" {
-		editor = "vi"
-	}
-
-	if err := RunExternalProcess(ExternalProcessSpec{
-		Dir:    r.RootDir,
-		Path:   editor,
-		Args:   []string{tmpPath},
-		Stdin:  os.Stdin,
-		Stdout: os.Stdout,
-		Stderr: os.Stderr,
-		Label:  "rebase-editor:todo",
-	}); err != nil {
+	if err := r.runInteractiveRebaseEditor(tmpPath, "rebase-editor:todo", opts); err != nil {
 		return fmt.Errorf("rebase: editor exited with error: %w", err)
 	}
 
@@ -142,7 +186,7 @@ func (r *Repo) RebaseInteractive(upstream string) error {
 	}
 
 	// 11. Execute via the shared path.
-	return r.rebaseWithTodoList(upstream, items)
+	return r.rebaseWithTodoListWithOptions(upstream, items, opts)
 }
 
 // RebaseInteractiveWithAutosquash starts an interactive rebase with autosquash.
@@ -150,6 +194,12 @@ func (r *Repo) RebaseInteractive(upstream string) error {
 // automatically reordered to follow their target commit and their action is
 // changed to fixup or squash respectively.
 func (r *Repo) RebaseInteractiveWithAutosquash(upstream string) error {
+	return r.RebaseInteractiveWithAutosquashOptions(upstream, InteractiveRebaseOptions{})
+}
+
+// RebaseInteractiveWithAutosquashOptions starts an autosquash interactive
+// rebase with explicit editor and todo exec process IO.
+func (r *Repo) RebaseInteractiveWithAutosquashOptions(upstream string, opts InteractiveRebaseOptions) error {
 	if r.isRebaseInProgress() {
 		return ErrRebaseInProgress
 	}
@@ -214,24 +264,7 @@ func (r *Repo) RebaseInteractiveWithAutosquash(upstream string) error {
 		return fmt.Errorf("rebase: close todo file: %w", err)
 	}
 
-	// Open editor.
-	editor := os.Getenv("VISUAL")
-	if editor == "" {
-		editor = os.Getenv("EDITOR")
-	}
-	if editor == "" {
-		editor = "vi"
-	}
-
-	if err := RunExternalProcess(ExternalProcessSpec{
-		Dir:    r.RootDir,
-		Path:   editor,
-		Args:   []string{tmpPath},
-		Stdin:  os.Stdin,
-		Stdout: os.Stdout,
-		Stderr: os.Stderr,
-		Label:  "rebase-editor:autosquash-todo",
-	}); err != nil {
+	if err := r.runInteractiveRebaseEditor(tmpPath, "rebase-editor:autosquash-todo", opts); err != nil {
 		return fmt.Errorf("rebase: editor exited with error: %w", err)
 	}
 
@@ -253,13 +286,44 @@ func (r *Repo) RebaseInteractiveWithAutosquash(upstream string) error {
 	}
 
 	// 13. Execute via the shared path.
-	return r.rebaseWithTodoList(upstream, editedItems)
+	return r.rebaseWithTodoListWithOptions(upstream, editedItems, opts)
+}
+
+func (r *Repo) runInteractiveRebaseEditor(path, label string, opts InteractiveRebaseOptions) error {
+	editor := os.Getenv("VISUAL")
+	if editor == "" {
+		editor = os.Getenv("EDITOR")
+	}
+	if editor == "" {
+		editor = "vi"
+	}
+
+	return RunExternalProcess(ExternalProcessSpec{
+		Context: opts.context(),
+		Dir:     r.RootDir,
+		Path:    editor,
+		Args:    []string{path},
+		Stdin:   opts.stdin(),
+		Stdout:  opts.stdout(),
+		Stderr:  opts.stderr(),
+		Label:   label,
+	})
 }
 
 // rebaseWithTodoList executes an interactive rebase with the given todo items.
 // This is the shared execution path used by both RebaseInteractive (after
 // the editor) and tests (which supply items directly).
 func (r *Repo) rebaseWithTodoList(upstream string, items []TodoItem) error {
+	return r.rebaseWithTodoListWithOptions(upstream, items, InteractiveRebaseOptions{})
+}
+
+func (r *Repo) rebaseWithTodoListWithOptions(upstream string, items []TodoItem, opts InteractiveRebaseOptions) error {
+	return r.withRepositoryLock("rebase-interactive", func() error {
+		return r.rebaseWithTodoListLocked(upstream, items, opts)
+	})
+}
+
+func (r *Repo) rebaseWithTodoListLocked(upstream string, items []TodoItem, opts InteractiveRebaseOptions) error {
 	if r.isRebaseInProgress() {
 		return ErrRebaseInProgress
 	}
@@ -300,7 +364,7 @@ func (r *Repo) rebaseWithTodoList(upstream string, items []TodoItem) error {
 	}
 
 	// Execute the todo list.
-	if err := r.executeTodoList(items); err != nil {
+	if err := r.executeTodoListWithOptions(items, opts); err != nil {
 		// On error, preserve sequencer state so --continue or --abort can work.
 		// The executeTodoList method already saved the remaining todo items
 		// and stopped-sha before returning.
@@ -308,7 +372,7 @@ func (r *Repo) rebaseWithTodoList(upstream string, items []TodoItem) error {
 	}
 
 	// Finish the rebase.
-	return r.finishRebase()
+	return r.finishRebase(nil)
 }
 
 // generateTodoList creates the todo file content from a list of commit hashes.
@@ -415,6 +479,10 @@ func serializeTodoItems(items []TodoItem) string {
 // edit stop), it saves the remaining items to the sequencer state so the
 // rebase can be continued or aborted.
 func (r *Repo) executeTodoList(items []TodoItem) error {
+	return r.executeTodoListWithOptions(items, InteractiveRebaseOptions{})
+}
+
+func (r *Repo) executeTodoListWithOptions(items []TodoItem, opts InteractiveRebaseOptions) error {
 	for i := 0; i < len(items); i++ {
 		item := items[i]
 
@@ -441,7 +509,7 @@ func (r *Repo) executeTodoList(items []TodoItem) error {
 				return err
 			}
 			// Amend the just-created commit with a new message from the editor.
-			if err := r.rewordLastCommit(); err != nil {
+			if err := r.rewordLastCommitWithOptions(opts); err != nil {
 				r.saveInteractiveTodoState(items[i+1:], hash)
 				return fmt.Errorf("rebase interactive: reword: %w", err)
 			}
@@ -497,7 +565,7 @@ func (r *Repo) executeTodoList(items []TodoItem) error {
 			continue
 
 		case TodoExec:
-			if err := r.execCommand(item.Message); err != nil {
+			if err := r.execCommandWithOptions(item.Message, opts); err != nil {
 				r.saveInteractiveTodoState(items[i+1:], "")
 				return fmt.Errorf("rebase interactive: exec %q: %w", item.Message, err)
 			}
@@ -523,6 +591,22 @@ func (r *Repo) saveInteractiveTodoState(remaining []TodoItem, stoppedHash object
 // RebaseInteractiveContinue resumes a paused interactive rebase after the user
 // has resolved conflicts (or made edits for an edit stop) and staged changes.
 func (r *Repo) RebaseInteractiveContinue() error {
+	return r.RebaseInteractiveContinueWithOptions(InteractiveRebaseOptions{})
+}
+
+// RebaseInteractiveContinueWithOptions resumes a paused interactive rebase
+// with explicit process IO for remaining todo exec actions.
+func (r *Repo) RebaseInteractiveContinueWithOptions(opts InteractiveRebaseOptions) error {
+	return r.withRepositoryLock("rebase-interactive-continue", func() error {
+		return r.rebaseInteractiveContinueWithOptions(opts)
+	})
+}
+
+func (r *Repo) rebaseInteractiveContinue() error {
+	return r.rebaseInteractiveContinueWithOptions(InteractiveRebaseOptions{})
+}
+
+func (r *Repo) rebaseInteractiveContinueWithOptions(opts InteractiveRebaseOptions) error {
 	if !r.isRebaseInProgress() {
 		return ErrNoRebaseInProgress
 	}
@@ -553,7 +637,7 @@ func (r *Repo) RebaseInteractiveContinue() error {
 		}
 
 		// Create a commit with the original message.
-		commitHash, err := r.Commit(origCommit.Message, origCommit.Author)
+		commitHash, err := r.CommitWithOptions(origCommit.Message, origCommit.Author, CommitOptions{Hooks: opts.hookRunOptions()})
 		if err != nil {
 			return fmt.Errorf("rebase continue: commit: %w", err)
 		}
@@ -567,7 +651,7 @@ func (r *Repo) RebaseInteractiveContinue() error {
 	todoContent, err := r.readSequencerFile("interactive-todo")
 	if err != nil || strings.TrimSpace(todoContent) == "" {
 		// No remaining items -- finish the rebase.
-		return r.finishRebase()
+		return r.finishRebase(nil)
 	}
 
 	// Parse remaining items.
@@ -577,15 +661,15 @@ func (r *Repo) RebaseInteractiveContinue() error {
 	}
 
 	if len(remaining) == 0 {
-		return r.finishRebase()
+		return r.finishRebase(nil)
 	}
 
 	// Continue executing the remaining items.
-	if err := r.executeTodoList(remaining); err != nil {
+	if err := r.executeTodoListWithOptions(remaining, opts); err != nil {
 		return err
 	}
 
-	return r.finishRebase()
+	return r.finishRebase(nil)
 }
 
 // amendHeadWithStaged amends the current HEAD commit with the currently
@@ -839,6 +923,10 @@ func (r *Repo) squashCommit(commitHash object.Hash, combineMessages bool) error 
 // rewordLastCommit opens the editor to let the user rewrite the message of
 // the most recent commit (HEAD).
 func (r *Repo) rewordLastCommit() error {
+	return r.rewordLastCommitWithOptions(InteractiveRebaseOptions{})
+}
+
+func (r *Repo) rewordLastCommitWithOptions(opts InteractiveRebaseOptions) error {
 	headHash, err := r.ResolveRef("HEAD")
 	if err != nil {
 		return fmt.Errorf("resolve HEAD: %w", err)
@@ -865,24 +953,7 @@ func (r *Repo) rewordLastCommit() error {
 		return err
 	}
 
-	// Open editor.
-	editor := os.Getenv("VISUAL")
-	if editor == "" {
-		editor = os.Getenv("EDITOR")
-	}
-	if editor == "" {
-		editor = "vi"
-	}
-
-	if err := RunExternalProcess(ExternalProcessSpec{
-		Dir:    r.RootDir,
-		Path:   editor,
-		Args:   []string{tmpPath},
-		Stdin:  os.Stdin,
-		Stdout: os.Stdout,
-		Stderr: os.Stderr,
-		Label:  "rebase-editor:reword",
-	}); err != nil {
+	if err := r.runInteractiveRebaseEditor(tmpPath, "rebase-editor:reword", opts); err != nil {
 		return fmt.Errorf("editor exited with error: %w", err)
 	}
 
@@ -918,14 +989,19 @@ func (r *Repo) rewordLastCommit() error {
 
 // execCommand runs a shell command during interactive rebase.
 func (r *Repo) execCommand(command string) error {
+	return r.execCommandWithOptions(command, InteractiveRebaseOptions{})
+}
+
+func (r *Repo) execCommandWithOptions(command string, opts InteractiveRebaseOptions) error {
 	return RunExternalProcess(ExternalProcessSpec{
-		Dir:    r.RootDir,
-		Path:   "sh",
-		Args:   []string{"-c", command},
-		Stdin:  os.Stdin,
-		Stdout: os.Stdout,
-		Stderr: os.Stderr,
-		Label:  "rebase-exec",
+		Context: opts.context(),
+		Dir:     r.RootDir,
+		Path:    "sh",
+		Args:    []string{"-c", command},
+		Stdin:   opts.stdin(),
+		Stdout:  opts.stdout(),
+		Stderr:  opts.stderr(),
+		Label:   "rebase-exec",
 	})
 }
 

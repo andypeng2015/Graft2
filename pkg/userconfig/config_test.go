@@ -78,6 +78,47 @@ func TestSaveAndLoadRoundTrip(t *testing.T) {
 	if profile.Owner != in.Owner {
 		t.Fatalf("OrchardProfile(%q).Owner = %q, want %q", in.OrchardURL, profile.Owner, in.Owner)
 	}
+
+	status, err := CheckPermissions()
+	if err != nil {
+		t.Fatalf("CheckPermissions: %v", err)
+	}
+	if !status.Exists {
+		t.Fatal("CheckPermissions Exists = false, want true")
+	}
+	if !status.Secure {
+		t.Fatalf("CheckPermissions Secure = false, warning=%q", status.Warning)
+	}
+}
+
+func TestCheckPermissionsReportsInsecureConfig(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	if err := Save(&Config{Token: "secret"}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	cfgPath := filepath.Join(home, ".graftconfig")
+	if err := os.Chmod(cfgPath, 0o644); err != nil {
+		t.Fatalf("Chmod: %v", err)
+	}
+
+	status, err := CheckPermissions()
+	if err != nil {
+		t.Fatalf("CheckPermissions: %v", err)
+	}
+	if !status.Exists {
+		t.Fatal("Exists = false, want true")
+	}
+	if status.Secure {
+		t.Fatal("Secure = true, want false")
+	}
+	if status.Mode != 0o644 {
+		t.Fatalf("Mode = %o, want 644", status.Mode)
+	}
+	if status.Warning == "" || status.Repair == "" {
+		t.Fatalf("expected warning and repair, got %+v", status)
+	}
 }
 
 func TestDefaultOrchardURLFallsBackToSingleProfile(t *testing.T) {

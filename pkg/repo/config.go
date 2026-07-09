@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // UserConfig stores user identity for commits.
@@ -16,8 +17,15 @@ type UserConfig struct {
 
 // Config stores repository-local settings such as named remotes.
 type Config struct {
-	Remotes map[string]string `json:"remotes,omitempty"`
-	User    *UserConfig       `json:"user,omitempty"`
+	Remotes map[string]string   `json:"remotes,omitempty"`
+	User    *UserConfig         `json:"user,omitempty"`
+	Hooks   *HookSecurityConfig `json:"hooks,omitempty"`
+}
+
+// HookSecurityConfig stores repo-local trust for executable/declarative hooks.
+type HookSecurityConfig struct {
+	Trusted   bool   `json:"trusted"`
+	TrustedAt string `json:"trustedAt,omitempty"`
 }
 
 func (r *Repo) configPath() string {
@@ -56,29 +64,9 @@ func (r *Repo) WriteConfig(cfg *Config) error {
 		return fmt.Errorf("write config: marshal: %w", err)
 	}
 
-	tmp, err := os.CreateTemp(r.GraftDir, ".config-tmp-*")
-	if err != nil {
-		return fmt.Errorf("write config: tmpfile: %w", err)
-	}
-	tmpName := tmp.Name()
-
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		os.Remove(tmpName)
-		return fmt.Errorf("write config: write: %w", err)
-	}
-	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		os.Remove(tmpName)
-		return fmt.Errorf("write config: sync: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		os.Remove(tmpName)
-		return fmt.Errorf("write config: close: %w", err)
-	}
-	if err := os.Rename(tmpName, r.configPath()); err != nil {
-		os.Remove(tmpName)
-		return fmt.Errorf("write config: rename: %w", err)
+	data = append(data, '\n')
+	if err := writeFileAtomic(r.configPath(), data, 0o644); err != nil {
+		return fmt.Errorf("write config: %w", err)
 	}
 	return nil
 }
@@ -118,4 +106,31 @@ func (r *Repo) RemoteURL(name string) (string, error) {
 		return "", fmt.Errorf("remote %q is not configured", name)
 	}
 	return url, nil
+}
+
+// SetHooksTrusted records whether repo-provided hooks may execute.
+func (r *Repo) SetHooksTrusted(trusted bool) error {
+	cfg, err := r.ReadConfig()
+	if err != nil {
+		return err
+	}
+	if cfg.Hooks == nil {
+		cfg.Hooks = &HookSecurityConfig{}
+	}
+	cfg.Hooks.Trusted = trusted
+	if trusted {
+		cfg.Hooks.TrustedAt = time.Now().UTC().Format(time.RFC3339)
+	} else {
+		cfg.Hooks.TrustedAt = ""
+	}
+	return r.WriteConfig(cfg)
+}
+
+// HooksTrusted reports whether repo-provided hooks may execute.
+func (r *Repo) HooksTrusted() (bool, error) {
+	cfg, err := r.ReadConfig()
+	if err != nil {
+		return false, err
+	}
+	return cfg.Hooks != nil && cfg.Hooks.Trusted, nil
 }

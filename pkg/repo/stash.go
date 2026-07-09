@@ -49,40 +49,24 @@ func (r *Repo) writeStashStack(entries []StashEntry) error {
 	if err != nil {
 		return fmt.Errorf("stash: marshal stack: %w", err)
 	}
-
-	// Atomic write via temp file + rename.
-	tmp, err := os.CreateTemp(r.GraftDir, ".stash-tmp-*")
-	if err != nil {
-		return fmt.Errorf("stash: tmpfile: %w", err)
-	}
-	tmpName := tmp.Name()
-
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		os.Remove(tmpName)
-		return fmt.Errorf("stash: write: %w", err)
-	}
-	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		os.Remove(tmpName)
-		return fmt.Errorf("stash: sync: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		os.Remove(tmpName)
-		return fmt.Errorf("stash: close: %w", err)
-	}
-
-	if err := os.Rename(tmpName, r.stashPath()); err != nil {
-		os.Remove(tmpName)
-		return fmt.Errorf("stash: rename: %w", err)
-	}
-	return nil
+	data = append(data, '\n')
+	return writeFileAtomic(r.stashPath(), data, 0o644)
 }
 
 // Stash saves the current staging and working tree state as a commit with
 // HEAD as parent, then reverts the working tree and staging to match HEAD.
 // Returns an error if there are no changes to stash.
 func (r *Repo) Stash(author string) (*StashEntry, error) {
+	var entry *StashEntry
+	err := r.withRepositoryLock("stash", func() error {
+		var stashErr error
+		entry, stashErr = r.stash(author)
+		return stashErr
+	})
+	return entry, err
+}
+
+func (r *Repo) stash(author string) (entry *StashEntry, err error) {
 	// 1. Check that there are changes to stash.
 	statusEntries, err := r.Status()
 	if err != nil {
@@ -97,6 +81,33 @@ func (r *Repo) Stash(author string) (*StashEntry, error) {
 	}
 	if !hasChanges {
 		return nil, fmt.Errorf("stash: no changes to stash")
+	}
+
+	touchedPaths := []string{
+		".graft/stash",
+		filepath.ToSlash(filepath.Join(".graft", "index")),
+		filepath.ToSlash(filepath.Join(".graft", "objects")),
+	}
+	for _, e := range statusEntries {
+		if e.IndexStatus != StatusClean || e.WorkStatus != StatusClean {
+			touchedPaths = append(touchedPaths, e.Path)
+		}
+	}
+
+	tx, err := r.BeginTransaction("stash")
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.MarkNeedsRepair(err.Error())
+		}
+	}()
+	if err := tx.AddFiles(touchedPaths); err != nil {
+		return nil, err
+	}
+	if err := tx.Prepare(); err != nil {
+		return nil, err
 	}
 
 	// 2. Stage all dirty working tree files so the stash commit captures
@@ -160,12 +171,12 @@ func (r *Repo) Stash(author string) (*StashEntry, error) {
 	if err != nil {
 		return nil, err
 	}
-	entry := StashEntry{
+	stashEntry := StashEntry{
 		CommitHash: commitHash,
 		Message:    commitObj.Message,
 		Timestamp:  now.Unix(),
 	}
-	stack = append([]StashEntry{entry}, stack...)
+	stack = append([]StashEntry{stashEntry}, stack...)
 	if err := r.writeStashStack(stack); err != nil {
 		return nil, err
 	}
@@ -177,7 +188,10 @@ func (r *Repo) Stash(author string) (*StashEntry, error) {
 
 	r.GitShadowStash("push")
 
-	return &entry, nil
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return &stashEntry, nil
 }
 
 // revertToHEAD resets the working tree and staging to match the HEAD commit's
@@ -269,14 +283,16 @@ func (r *Repo) revertToHEAD() error {
 
 // StashPop applies the stash at index then drops it from the stack.
 func (r *Repo) StashPop(index int) error {
-	if err := r.StashApply(index); err != nil {
-		return err
-	}
-	if err := r.StashDrop(index); err != nil {
-		return err
-	}
-	r.GitShadowStash("pop")
-	return nil
+	return r.withRepositoryLock("stash-pop", func() error {
+		if err := r.StashApply(index); err != nil {
+			return err
+		}
+		if err := r.StashDrop(index); err != nil {
+			return err
+		}
+		r.GitShadowStash("pop")
+		return nil
+	})
 }
 
 // StashApply applies the stash at index using a 3-way merge:
@@ -289,16 +305,18 @@ func (r *Repo) StashPop(index int) error {
 // clobbering changes. Returns nil error on success (including when there are
 // conflicts). Use StashApplyMerge to get a detailed result.
 func (r *Repo) StashApply(index int) error {
-	result, err := r.StashApplyMerge(index)
-	if err != nil {
-		return err
-	}
-	if !result.Clean {
-		return fmt.Errorf("stash apply: %d conflict(s) in: %s",
-			len(result.ConflictPaths),
-			joinPaths(result.ConflictPaths))
-	}
-	return nil
+	return r.withRepositoryLock("stash-apply", func() error {
+		result, err := r.StashApplyMerge(index)
+		if err != nil {
+			return err
+		}
+		if !result.Clean {
+			return fmt.Errorf("stash apply: %d conflict(s) in: %s",
+				len(result.ConflictPaths),
+				joinPaths(result.ConflictPaths))
+		}
+		return nil
+	})
 }
 
 // joinPaths joins a slice of paths with ", ".
@@ -310,6 +328,16 @@ func joinPaths(paths []string) string {
 // a detailed result. Unlike StashApply, this method does not return an error
 // for conflicts -- instead it reports them in StashApplyResult.
 func (r *Repo) StashApplyMerge(index int) (*StashApplyResult, error) {
+	var result *StashApplyResult
+	err := r.withRepositoryLock("stash-apply", func() error {
+		var applyErr error
+		result, applyErr = r.stashApplyMerge(index)
+		return applyErr
+	})
+	return result, err
+}
+
+func (r *Repo) stashApplyMerge(index int) (result *StashApplyResult, err error) {
 	stack, err := r.readStashStack()
 	if err != nil {
 		return nil, err
@@ -373,6 +401,33 @@ func (r *Repo) StashApplyMerge(index int) (*StashApplyResult, error) {
 		return nil, fmt.Errorf("stash: %w", err)
 	}
 
+	touchedPaths := []string{
+		filepath.ToSlash(filepath.Join(".graft", "index")),
+		filepath.ToSlash(filepath.Join(".graft", "objects")),
+	}
+	for _, f := range mergeResult.Files {
+		if f.Status != "unchanged" {
+			touchedPaths = append(touchedPaths, f.Path)
+		}
+	}
+	touchedPaths = append(touchedPaths, mergeResult.DeletedPaths...)
+
+	tx, err := r.BeginTransaction("stash-apply")
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.MarkNeedsRepair(err.Error())
+		}
+	}()
+	if err := tx.AddFiles(touchedPaths); err != nil {
+		return nil, err
+	}
+	if err := tx.Prepare(); err != nil {
+		return nil, err
+	}
+
 	// Apply results to the working directory.
 	if err := r.applyThreeWayResult(mergeResult); err != nil {
 		return nil, fmt.Errorf("stash: %w", err)
@@ -405,10 +460,14 @@ func (r *Repo) StashApplyMerge(index int) (*StashApplyResult, error) {
 		}
 	}
 
-	return &StashApplyResult{
+	result = &StashApplyResult{
 		Clean:         !mergeResult.HasConflicts,
 		ConflictPaths: mergeResult.ConflictDetails,
-	}, nil
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
 // StashList returns all stash entries, newest first.
@@ -422,6 +481,12 @@ func (r *Repo) StashList() ([]StashEntry, error) {
 
 // StashDrop removes the stash entry at the given index.
 func (r *Repo) StashDrop(index int) error {
+	return r.withRepositoryLock("stash-drop", func() error {
+		return r.stashDrop(index)
+	})
+}
+
+func (r *Repo) stashDrop(index int) (err error) {
 	stack, err := r.readStashStack()
 	if err != nil {
 		return err
@@ -431,12 +496,28 @@ func (r *Repo) StashDrop(index int) error {
 		return fmt.Errorf("stash: index %d out of range (stack has %d entries)", index, len(stack))
 	}
 
+	tx, err := r.BeginTransaction("stash-drop")
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.MarkNeedsRepair(err.Error())
+		}
+	}()
+	if err := tx.AddFile(".graft/stash"); err != nil {
+		return err
+	}
+	if err := tx.Prepare(); err != nil {
+		return err
+	}
+
 	stack = append(stack[:index], stack[index+1:]...)
 	if err := r.writeStashStack(stack); err != nil {
 		return err
 	}
 	r.GitShadowStash("drop")
-	return nil
+	return tx.Commit()
 }
 
 // StashShowEntry describes a single file changed in a stash entry.

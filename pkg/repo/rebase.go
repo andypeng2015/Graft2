@@ -2,6 +2,7 @@ package repo
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -32,6 +33,12 @@ type RebaseOptions struct {
 	// Autostash automatically stashes uncommitted changes before rebase
 	// and restores them after completion (or abort).
 	Autostash bool
+	// WarningWriter receives non-fatal autostash restore warnings. If nil,
+	// warnings are suppressed.
+	WarningWriter io.Writer
+	// Interactive controls editor and todo exec IO when continuing an
+	// interactive rebase.
+	Interactive InteractiveRebaseOptions
 }
 
 // rebaseMergeDir returns the path to the sequencer state directory.
@@ -65,6 +72,12 @@ func (r *Repo) Rebase(upstream string) error {
 // RebaseWithOptions replays commits from the current branch onto the given
 // upstream, using the provided options.
 func (r *Repo) RebaseWithOptions(upstream string, opts RebaseOptions) error {
+	return r.withRepositoryLock("rebase", func() error {
+		return r.rebaseWithOptions(upstream, opts)
+	})
+}
+
+func (r *Repo) rebaseWithOptions(upstream string, opts RebaseOptions) error {
 	if r.isRebaseInProgress() {
 		return ErrRebaseInProgress
 	}
@@ -97,7 +110,7 @@ func (r *Repo) RebaseWithOptions(upstream string, opts RebaseOptions) error {
 	// 4. Already up to date?
 	if headHash == upstreamHash || mergeBase == headHash {
 		// Pop the autostash if we saved one, even though we're a no-op.
-		r.autostashPop()
+		r.autostashPop(opts.WarningWriter)
 		return nil // no-op
 	}
 
@@ -107,7 +120,7 @@ func (r *Repo) RebaseWithOptions(upstream string, opts RebaseOptions) error {
 		return fmt.Errorf("rebase: %w", err)
 	}
 	if len(commits) == 0 {
-		r.autostashPop()
+		r.autostashPop(opts.WarningWriter)
 		return nil // nothing to replay
 	}
 
@@ -117,7 +130,7 @@ func (r *Repo) RebaseWithOptions(upstream string, opts RebaseOptions) error {
 		return fmt.Errorf("rebase: read HEAD: %w", err)
 	}
 
-	return r.doRebase(branchName, headHash, upstreamHash, commits)
+	return r.doRebase(branchName, headHash, upstreamHash, commits, opts.WarningWriter)
 }
 
 // RebaseOnto replays commits from upstream..HEAD onto newbase.
@@ -128,6 +141,12 @@ func (r *Repo) RebaseOnto(newbase, upstream string) error {
 // RebaseOntoWithOptions replays commits from upstream..HEAD onto newbase,
 // using the provided options.
 func (r *Repo) RebaseOntoWithOptions(newbase, upstream string, opts RebaseOptions) error {
+	return r.withRepositoryLock("rebase-onto", func() error {
+		return r.rebaseOntoWithOptions(newbase, upstream, opts)
+	})
+}
+
+func (r *Repo) rebaseOntoWithOptions(newbase, upstream string, opts RebaseOptions) error {
 	if r.isRebaseInProgress() {
 		return ErrRebaseInProgress
 	}
@@ -163,7 +182,7 @@ func (r *Repo) RebaseOntoWithOptions(newbase, upstream string, opts RebaseOption
 		return fmt.Errorf("rebase: %w", err)
 	}
 	if len(commits) == 0 {
-		r.autostashPop()
+		r.autostashPop(opts.WarningWriter)
 		return nil
 	}
 
@@ -172,11 +191,11 @@ func (r *Repo) RebaseOntoWithOptions(newbase, upstream string, opts RebaseOption
 		return fmt.Errorf("rebase: read HEAD: %w", err)
 	}
 
-	return r.doRebase(branchName, headHash, newbaseHash, commits)
+	return r.doRebase(branchName, headHash, newbaseHash, commits, opts.WarningWriter)
 }
 
 // doRebase is the shared implementation for Rebase and RebaseOnto.
-func (r *Repo) doRebase(branchName string, origHead, onto object.Hash, commits []object.Hash) error {
+func (r *Repo) doRebase(branchName string, origHead, onto object.Hash, commits []object.Hash, warningWriter io.Writer) error {
 	// 6. Save sequencer state.
 	if err := r.writeSequencerState(branchName, origHead, onto, commits, nil); err != nil {
 		return fmt.Errorf("rebase: save state: %w", err)
@@ -190,19 +209,34 @@ func (r *Repo) doRebase(branchName string, origHead, onto object.Hash, commits [
 	}
 
 	// 8. Replay commits.
-	return r.replayCommits()
+	return r.replayCommits(warningWriter)
 }
 
 // RebaseContinue resumes a paused rebase after the user has resolved conflicts
 // and staged the resolution.
 func (r *Repo) RebaseContinue() error {
+	return r.RebaseContinueWithOptions(RebaseOptions{})
+}
+
+// RebaseContinueWithOptions resumes a paused rebase with explicit optional IO.
+func (r *Repo) RebaseContinueWithOptions(opts RebaseOptions) error {
+	return r.withRepositoryLock("rebase-continue", func() error {
+		return r.rebaseContinueWithOptions(opts)
+	})
+}
+
+func (r *Repo) rebaseContinue() error {
+	return r.rebaseContinueWithOptions(RebaseOptions{})
+}
+
+func (r *Repo) rebaseContinueWithOptions(opts RebaseOptions) error {
 	if !r.isRebaseInProgress() {
 		return ErrNoRebaseInProgress
 	}
 
 	// Dispatch to the interactive continue path if this is an interactive rebase.
 	if r.isInteractiveRebase() {
-		return r.RebaseInteractiveContinue()
+		return r.rebaseInteractiveContinueWithOptions(opts.Interactive)
 	}
 
 	seq := r.rebaseSeq()
@@ -263,11 +297,17 @@ func (r *Repo) RebaseContinue() error {
 	seq.RemoveFile("stopped-sha")
 
 	// Continue replaying remaining commits.
-	return r.replayCommits()
+	return r.replayCommits(nil)
 }
 
 // RebaseAbort cancels the current rebase and restores the original state.
 func (r *Repo) RebaseAbort() error {
+	return r.withRepositoryLock("rebase-abort", func() error {
+		return r.rebaseAbort()
+	})
+}
+
+func (r *Repo) rebaseAbort() (err error) {
 	if !r.isRebaseInProgress() {
 		return ErrNoRebaseInProgress
 	}
@@ -288,10 +328,62 @@ func (r *Repo) RebaseAbort() error {
 		return fmt.Errorf("rebase abort: read head-name: %w", err)
 	}
 
+	origCommit, err := r.Store.ReadCommit(origHead)
+	if err != nil {
+		return fmt.Errorf("rebase abort: read orig commit: %w", err)
+	}
+	origFiles, err := r.FlattenTree(origCommit.TreeHash)
+	if err != nil {
+		return fmt.Errorf("rebase abort: flatten orig tree: %w", err)
+	}
+
+	currentHead, _ := r.ResolveRef("HEAD")
+	var branchCurrent object.Hash
+	if strings.HasPrefix(headName, "refs/heads/") {
+		branchCurrent, _ = r.ResolveRef(headName)
+	}
+
+	tx, err := r.BeginTransaction("rebase-abort")
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.MarkNeedsRepair(err.Error())
+		}
+	}()
+	if err := tx.AddRef("HEAD", currentHead, origHead); err != nil {
+		return err
+	}
+	if strings.HasPrefix(headName, "refs/heads/") {
+		if err := tx.AddRef(headName, branchCurrent, origHead); err != nil {
+			return err
+		}
+	}
+	touchedPaths := []string{
+		filepath.ToSlash(filepath.Join(".graft", "HEAD")),
+		filepath.ToSlash(filepath.Join(".graft", "index")),
+		filepath.ToSlash(filepath.Join(".graft", "rebase-merge")),
+	}
+	if strings.HasPrefix(headName, "refs/") {
+		touchedPaths = append(touchedPaths, filepath.ToSlash(filepath.Join(".graft", filepath.FromSlash(headName))))
+	}
+	if hadAutostash {
+		touchedPaths = append(touchedPaths, ".graft/stash")
+	}
+	for _, f := range origFiles {
+		touchedPaths = append(touchedPaths, f.Path)
+	}
+	if err := tx.AddFiles(touchedPaths); err != nil {
+		return err
+	}
+	if err := tx.Prepare(); err != nil {
+		return err
+	}
+
 	// Update the branch ref back to orig-head.
 	if strings.HasPrefix(headName, "refs/heads/") {
-		currentRef, _ := r.ResolveRef(headName)
-		if err := r.UpdateRefCAS(headName, origHead, currentRef); err != nil {
+		if err := r.UpdateRefCAS(headName, origHead, branchCurrent); err != nil {
 			return fmt.Errorf("rebase abort: restore branch ref: %w", err)
 		}
 	}
@@ -308,17 +400,13 @@ func (r *Repo) RebaseAbort() error {
 	}
 
 	// Checkout the original state.
-	origCommit, err := r.Store.ReadCommit(origHead)
-	if err != nil {
-		return fmt.Errorf("rebase abort: read orig commit: %w", err)
-	}
 	if err := r.checkoutTree(origCommit); err != nil {
 		return fmt.Errorf("rebase abort: checkout: %w", err)
 	}
 
 	// Restore autostash before cleaning up sequencer state.
 	if hadAutostash {
-		r.autostashPop()
+		r.autostashPop(nil)
 	}
 
 	// Clean up sequencer state.
@@ -326,11 +414,17 @@ func (r *Repo) RebaseAbort() error {
 		return fmt.Errorf("rebase abort: cleanup: %w", err)
 	}
 
-	return nil
+	return tx.Commit()
 }
 
 // RebaseSkip drops the current stopped commit and continues with the next.
 func (r *Repo) RebaseSkip() error {
+	return r.withRepositoryLock("rebase-skip", func() error {
+		return r.rebaseSkip()
+	})
+}
+
+func (r *Repo) rebaseSkip() error {
 	if !r.isRebaseInProgress() {
 		return ErrNoRebaseInProgress
 	}
@@ -369,7 +463,7 @@ func (r *Repo) RebaseSkip() error {
 	}
 
 	// Continue replaying.
-	return r.replayCommits()
+	return r.replayCommits(nil)
 }
 
 // resolveToHash resolves a target string (branch name or hash) to a commit hash.
@@ -423,16 +517,16 @@ func (r *Repo) collectCommits(stop, tip object.Hash) ([]object.Hash, error) {
 }
 
 // replayCommits reads the todo list and replays each remaining commit.
-func (r *Repo) replayCommits() error {
+func (r *Repo) replayCommits(warningWriter io.Writer) error {
 	seq := r.rebaseSeq()
 
 	todoStr, err := seq.ReadFile("todo")
 	if err != nil {
 		// No todo means nothing left — finish up.
-		return r.finishRebase()
+		return r.finishRebase(warningWriter)
 	}
 	if todoStr == "" {
-		return r.finishRebase()
+		return r.finishRebase(warningWriter)
 	}
 
 	todo := strings.Split(todoStr, "\n")
@@ -487,7 +581,7 @@ func (r *Repo) replayCommits() error {
 		return fmt.Errorf("rebase: clear todo: %w", err)
 	}
 
-	return r.finishRebase()
+	return r.finishRebase(warningWriter)
 }
 
 // replaySingleCommit cherry-picks a single commit onto the current HEAD.
@@ -634,7 +728,7 @@ func (r *Repo) replaySingleCommit(commitHash object.Hash) error {
 }
 
 // finishRebase updates the original branch ref and reattaches HEAD.
-func (r *Repo) finishRebase() error {
+func (r *Repo) finishRebase(warningWriter io.Writer) (err error) {
 	seq := r.rebaseSeq()
 
 	headName, err := seq.ReadFile("head-name")
@@ -648,10 +742,50 @@ func (r *Repo) finishRebase() error {
 		return fmt.Errorf("rebase finish: resolve HEAD: %w", err)
 	}
 
+	currentHead := newTip
+	branchCurrent := object.Hash("")
+	if strings.HasPrefix(headName, "refs/heads/") {
+		branchCurrent, _ = r.ResolveRef(headName)
+	}
+	hadAutostash := r.hasAutostash()
+
+	tx, err := r.BeginTransaction("rebase-finish")
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.MarkNeedsRepair(err.Error())
+		}
+	}()
+	if err := tx.AddRef("HEAD", currentHead, newTip); err != nil {
+		return err
+	}
+	if strings.HasPrefix(headName, "refs/heads/") {
+		if err := tx.AddRef(headName, branchCurrent, newTip); err != nil {
+			return err
+		}
+	}
+	touchedPaths := []string{
+		filepath.ToSlash(filepath.Join(".graft", "HEAD")),
+		filepath.ToSlash(filepath.Join(".graft", "rebase-merge")),
+	}
+	if strings.HasPrefix(headName, "refs/") {
+		touchedPaths = append(touchedPaths, filepath.ToSlash(filepath.Join(".graft", filepath.FromSlash(headName))))
+	}
+	if hadAutostash {
+		touchedPaths = append(touchedPaths, ".graft/stash")
+	}
+	if err := tx.AddFiles(touchedPaths); err != nil {
+		return err
+	}
+	if err := tx.Prepare(); err != nil {
+		return err
+	}
+
 	// Update the branch ref to point to the new tip.
 	if strings.HasPrefix(headName, "refs/heads/") {
-		currentRef, _ := r.ResolveRef(headName)
-		if err := r.UpdateRefCAS(headName, newTip, currentRef); err != nil {
+		if err := r.UpdateRefCAS(headName, newTip, branchCurrent); err != nil {
 			return fmt.Errorf("rebase finish: update branch ref: %w", err)
 		}
 	}
@@ -665,14 +799,14 @@ func (r *Repo) finishRebase() error {
 
 	// Restore autostash before cleaning up the sequencer directory
 	// (which contains the autostash marker file).
-	r.autostashPop()
+	r.autostashPop(warningWriter)
 
 	// Clean up sequencer state.
 	if err := seq.Clean(); err != nil {
 		return fmt.Errorf("rebase finish: cleanup: %w", err)
 	}
 
-	return nil
+	return tx.Commit()
 }
 
 // detachHead sets HEAD to a raw commit hash and checks out the tree.
@@ -879,7 +1013,7 @@ func (r *Repo) autostashSave() error {
 // on success. If popping the stash causes conflicts, a warning is printed to
 // stderr but the error is not propagated -- the rebase itself is considered
 // successful.
-func (r *Repo) autostashPop() {
+func (r *Repo) autostashPop(warningWriter io.Writer) {
 	if !r.hasAutostash() {
 		return
 	}
@@ -890,7 +1024,7 @@ func (r *Repo) autostashPop() {
 	// Find the stash index matching our autostash hash.
 	stack, err := r.readStashStack()
 	if err != nil || len(stack) == 0 {
-		fmt.Fprintf(os.Stderr, "warning: autostash pop: could not read stash stack: %v\n", err)
+		writeAutostashWarning(warningWriter, "warning: autostash pop: could not read stash stack: %v\n", err)
 		return
 	}
 
@@ -902,14 +1036,21 @@ func (r *Repo) autostashPop() {
 		}
 	}
 	if idx < 0 {
-		fmt.Fprintf(os.Stderr, "warning: autostash pop: stash entry not found (may have been manually popped)\n")
+		writeAutostashWarning(warningWriter, "warning: autostash pop: stash entry not found (may have been manually popped)\n")
 		return
 	}
 
 	err = r.StashPop(idx)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "warning: could not restore autostash: %v\nYour changes are still in the stash.\n", err)
+		writeAutostashWarning(warningWriter, "warning: could not restore autostash: %v\nYour changes are still in the stash.\n", err)
 	}
+}
+
+func writeAutostashWarning(w io.Writer, format string, args ...any) {
+	if w == nil {
+		return
+	}
+	fmt.Fprintf(w, format, args...)
 }
 
 // writeSequencerFileAtomic writes a file to the rebase-merge directory using

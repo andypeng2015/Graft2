@@ -74,7 +74,7 @@ func extractImpl(filename string, source []byte, opts ExtractOptions) (*EntityLi
 		return el, nil
 	}
 
-	bt, err := grammars.ParseFilePooled(filename, source)
+	bt, err := parseFilePooled(filename, source)
 	if err != nil {
 		return nil, fmt.Errorf("parse error: %w", err)
 	}

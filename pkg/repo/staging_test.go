@@ -910,6 +910,19 @@ func TestAdd_LargeJSONSkipsEntities(t *testing.T) {
 	if entry.EntityListHash != "" {
 		t.Error("EntityListHash should be empty for large JSON")
 	}
+	if len(entry.ExtractionDiagnostics) != 1 {
+		t.Fatalf("len(ExtractionDiagnostics) = %d, want 1", len(entry.ExtractionDiagnostics))
+	}
+	if entry.ExtractionDiagnostics[0].Code != "entity_extraction_data_format_skipped" {
+		t.Fatalf("diagnostic code = %q, want entity_extraction_data_format_skipped", entry.ExtractionDiagnostics[0].Code)
+	}
+	report := r.VerifyIntegrity()
+	if report.OK != true {
+		t.Fatalf("VerifyIntegrity OK = false, want true: %+v", report.Diagnostics)
+	}
+	if !hasRepositoryDiagnostic(report, "entity_extraction_data_format_skipped") {
+		t.Fatalf("diagnostics missing entity_extraction_data_format_skipped: %+v", report.Diagnostics)
+	}
 }
 
 func TestAdd_ForceEntitiesOnLargeJSON(t *testing.T) {

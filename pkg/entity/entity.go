@@ -78,8 +78,15 @@ func (e *Entity) IdentityKey() string {
 
 // EntityList is an ordered sequence of entities extracted from a source file.
 type EntityList struct {
-	Language string
-	Path     string
-	Source   []byte
-	Entities []Entity
+	Language    string
+	Path        string
+	Source      []byte
+	Entities    []Entity
+	Diagnostics []ExtractionDiagnostic
+}
+
+type ExtractionDiagnostic struct {
+	Severity string
+	Code     string
+	Message  string
 }

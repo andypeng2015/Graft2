@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"log"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -62,6 +62,43 @@ const (
 	HookPreCommitAnalysis HookName = "pre-commit-analysis"
 )
 
+// HookRunOptions controls process IO for hook execution. Zero values preserve
+// the legacy behavior of writing hook stdout/stderr to the process streams.
+type HookRunOptions struct {
+	Context       context.Context
+	Stdout        io.Writer
+	Stderr        io.Writer
+	WarningWriter io.Writer
+}
+
+func (opts HookRunOptions) context() context.Context {
+	if opts.Context != nil {
+		return opts.Context
+	}
+	return context.Background()
+}
+
+func (opts HookRunOptions) stdout() io.Writer {
+	if opts.Stdout != nil {
+		return opts.Stdout
+	}
+	return os.Stdout
+}
+
+func (opts HookRunOptions) stderr() io.Writer {
+	if opts.Stderr != nil {
+		return opts.Stderr
+	}
+	return os.Stderr
+}
+
+func (opts HookRunOptions) warningWriter() io.Writer {
+	if opts.WarningWriter != nil {
+		return opts.WarningWriter
+	}
+	return os.Stderr
+}
+
 // RunHook executes the named hook script if it exists and is executable.
 //
 // Returns nil if the hook does not exist or is not executable.
@@ -71,6 +108,16 @@ const (
 // and run with the working directory set to the repository root.
 // Hook stdout and stderr are connected to os.Stdout and os.Stderr.
 func (r *Repo) RunHook(name HookName, args ...string) error {
+	return r.RunHookWithOptions(name, HookRunOptions{}, args...)
+}
+
+// RunHookWithOptions executes the named hook using explicit process IO.
+func (r *Repo) RunHookWithOptions(name HookName, opts HookRunOptions, args ...string) error {
+	trusted, err := r.HooksTrusted()
+	if err != nil || !trusted {
+		return nil
+	}
+
 	hookPath := filepath.Join(r.GraftDir, "hooks", string(name))
 
 	info, err := os.Stat(hookPath)
@@ -86,12 +133,12 @@ func (r *Repo) RunHook(name HookName, args ...string) error {
 	}
 
 	if err := RunExternalProcess(ExternalProcessSpec{
-		Context: context.Background(),
+		Context: opts.context(),
 		Dir:     r.RootDir,
 		Path:    hookPath,
 		Args:    args,
-		Stdout:  os.Stdout,
-		Stderr:  os.Stderr,
+		Stdout:  opts.stdout(),
+		Stderr:  opts.stderr(),
 		Env: append(os.Environ(),
 			"GRAFT_DIR="+r.GraftDir,
 			"GRAFT_WORK_TREE="+r.RootDir,
@@ -113,6 +160,12 @@ func (r *Repo) RunHook(name HookName, args ...string) error {
 // external commands. If entry.Timeout is set (Go duration string), the
 // process is killed when the timeout expires.
 func RunHookEntry(ctx context.Context, repoRoot string, entry HookEntry, payload []byte) error {
+	return RunHookEntryWithOptions(ctx, repoRoot, entry, payload, HookRunOptions{})
+}
+
+// RunHookEntryWithOptions executes a single HookEntry using explicit process
+// IO for external commands and warnings.
+func RunHookEntryWithOptions(ctx context.Context, repoRoot string, entry HookEntry, payload []byte, opts HookRunOptions) error {
 	if entry.Grep != "" {
 		// Grep hooks require a Repo for structural matching. Open one
 		// from repoRoot so the non-Repo call path still works.
@@ -120,7 +173,7 @@ func RunHookEntry(ctx context.Context, repoRoot string, entry HookEntry, payload
 		if err != nil {
 			return fmt.Errorf("hook %s.%s: cannot open repo for grep: %w", entry.Point, entry.Name, err)
 		}
-		return runGrepHook(ctx, r, entry)
+		return runGrepHookWithOptions(ctx, r, entry, opts)
 	}
 
 	if entry.Type != "" {
@@ -153,8 +206,8 @@ func RunHookEntry(ctx context.Context, repoRoot string, entry HookEntry, payload
 		Path:    parts[0],
 		Args:    parts[1:],
 		Stdin:   bytes.NewReader(payload),
-		Stdout:  os.Stdout,
-		Stderr:  os.Stderr,
+		Stdout:  opts.stdout(),
+		Stderr:  opts.stderr(),
 		Env: append(os.Environ(),
 			"GRAFT_HOOK="+entry.Point+"."+entry.Name,
 			"GRAFT_REPO_ROOT="+repoRoot,
@@ -173,12 +226,18 @@ func RunHookEntry(ctx context.Context, repoRoot string, entry HookEntry, payload
 // true (pre-* hooks), execution stops at the first error. If canAbort is
 // false (post-* hooks), errors are logged as warnings and all hooks run.
 func RunHooksForPoint(ctx context.Context, repoRoot string, hooks []HookEntry, payload []byte, canAbort bool) error {
+	return RunHooksForPointWithOptions(ctx, repoRoot, hooks, payload, canAbort, HookRunOptions{})
+}
+
+// RunHooksForPointWithOptions runs all the given hooks sequentially using
+// explicit process IO for external commands and warnings.
+func RunHooksForPointWithOptions(ctx context.Context, repoRoot string, hooks []HookEntry, payload []byte, canAbort bool, opts HookRunOptions) error {
 	for _, h := range hooks {
-		if err := RunHookEntry(ctx, repoRoot, h, payload); err != nil {
+		if err := RunHookEntryWithOptions(ctx, repoRoot, h, payload, opts); err != nil {
 			if canAbort {
 				return err
 			}
-			log.Printf("WARNING: hook %s.%s failed: %v", h.Point, h.Name, err)
+			fmt.Fprintf(opts.warningWriter(), "warning: hook %s.%s failed: %v\n", h.Point, h.Name, err)
 		}
 	}
 	return nil
@@ -199,13 +258,22 @@ func runBuiltinHook(ctx context.Context, repoRoot string, entry HookEntry, paylo
 // and runs them with the provided payload piped to stdin.
 // canAbort controls whether failures stop execution.
 func (r *Repo) RunHooksForPointByName(point string, payload []byte, canAbort bool) error {
-	cfg, err := LoadHooksConfig(r.RootDir, nil)
-	if err != nil || len(cfg.Hooks) == 0 {
+	return r.RunHooksForPointByNameWithOptions(point, payload, canAbort, HookRunOptions{})
+}
+
+// RunHooksForPointByNameWithOptions loads hooks for the given point from
+// hooks.toml and runs them with explicit process IO.
+func (r *Repo) RunHooksForPointByNameWithOptions(point string, payload []byte, canAbort bool, opts HookRunOptions) error {
+	cfg, err := r.LoadHooksConfig(nil)
+	if err != nil {
+		return err
+	}
+	if len(cfg.Hooks) == 0 {
 		return nil
 	}
 	entries := cfg.ForPoint(point)
 	if len(entries) == 0 {
 		return nil
 	}
-	return RunHooksForPoint(context.Background(), r.RootDir, entries, payload, canAbort)
+	return RunHooksForPointWithOptions(opts.context(), r.RootDir, entries, payload, canAbort, opts)
 }

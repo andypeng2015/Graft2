@@ -21,6 +21,18 @@ type VerificationResult struct {
 	Unsigned   bool   // true if commit has no signature
 }
 
+// TagVerificationResult holds the result of verifying a tag signature.
+type TagVerificationResult struct {
+	TagName    string
+	TagHash    object.Hash
+	TargetHash object.Hash
+	Valid      bool
+	SignerKey  string
+	Algorithm  string
+	Error      string
+	Unsigned   bool
+}
+
 // VerifyCommitSignature verifies a single commit's signature. It reads the
 // commit, checks if it has a Signature field. If no signature, the result
 // has Unsigned=true. If signed, it extracts the public key from the signature
@@ -82,6 +94,96 @@ func (r *Repo) VerifyCommitSignature(commitHash object.Hash) (*VerificationResul
 
 	result.Valid = true
 	result.SignerKey = ssh.FingerprintSHA256(pubKey)
+	return result, nil
+}
+
+// VerifyTagSignature verifies a native Graft annotated tag signature.
+func (r *Repo) VerifyTagSignature(name string) (*TagVerificationResult, error) {
+	return r.verifyTagSignature(name, nil, false)
+}
+
+// VerifyTagAgainstAllowedSigners verifies a tag signature and requires the
+// signing key to match one of the allowed signers.
+func (r *Repo) VerifyTagAgainstAllowedSigners(name string, signers map[string][]byte) (*TagVerificationResult, error) {
+	return r.verifyTagSignature(name, signers, true)
+}
+
+func (r *Repo) verifyTagSignature(name string, signers map[string][]byte, requireAllowedSigner bool) (*TagVerificationResult, error) {
+	tagHash, err := r.ResolveTag(name)
+	if err != nil {
+		return nil, err
+	}
+	result := &TagVerificationResult{
+		TagName: name,
+		TagHash: tagHash,
+	}
+
+	objType, data, err := r.Store.Read(tagHash)
+	if err != nil {
+		return nil, fmt.Errorf("verify tag: read tag %s: %w", tagHash, err)
+	}
+	if objType != object.TypeTag {
+		result.TargetHash = tagHash
+		result.Unsigned = true
+		return result, nil
+	}
+
+	tag, err := object.UnmarshalTag(data)
+	if err != nil {
+		return nil, fmt.Errorf("verify tag: parse tag %s: %w", tagHash, err)
+	}
+	result.TargetHash = tag.TargetHash
+
+	signature := object.TagSignature(tag.Data)
+	if signature == "" {
+		result.Unsigned = true
+		return result, nil
+	}
+
+	parts := strings.SplitN(signature, ":", 4)
+	if len(parts) != 4 {
+		result.Error = "invalid signature format: expected 4 colon-separated parts"
+		return result, nil
+	}
+	if parts[0] != commitSignaturePrefix {
+		result.Error = fmt.Sprintf("invalid signature prefix: %q", parts[0])
+		return result, nil
+	}
+
+	algo := parts[1]
+	pubKeyB64 := parts[2]
+	result.Algorithm = algo
+
+	pubKeyBytes, err := base64.StdEncoding.DecodeString(pubKeyB64)
+	if err != nil {
+		result.Error = fmt.Sprintf("decode public key: %v", err)
+		return result, nil
+	}
+	pubKey, err := ssh.ParsePublicKey(pubKeyBytes)
+	if err != nil {
+		result.Error = fmt.Sprintf("parse public key: %v", err)
+		return result, nil
+	}
+
+	authKeyData := ssh.MarshalAuthorizedKey(pubKey)
+	payload := object.TagSigningPayload(tag.Data)
+	if err := VerifySSHSignature(payload, signature, authKeyData); err != nil {
+		result.Error = fmt.Sprintf("verification failed: %v", err)
+		return result, nil
+	}
+
+	if requireAllowedSigner {
+		allowed, signerName := signatureAllowed(authKeyData, signers)
+		if !allowed {
+			result.Error = "signature valid but key not in allowed signers"
+			result.SignerKey = ssh.FingerprintSHA256(pubKey)
+			return result, nil
+		}
+		result.SignerKey = signerName
+	} else {
+		result.SignerKey = ssh.FingerprintSHA256(pubKey)
+	}
+	result.Valid = true
 	return result, nil
 }
 
@@ -211,21 +313,32 @@ func VerifyCommitAgainstAllowedSigners(commit *object.CommitObj, signers map[str
 		return result, nil
 	}
 
-	// Now check if the signing key matches any allowed signer.
-	sigPubKeyMarshaled := sigPubKey.Marshal()
-	for email, authKeyLine := range signers {
-		allowedPub, _, _, _, err := ssh.ParseAuthorizedKey(authKeyLine)
-		if err != nil {
-			continue
-		}
-		if string(allowedPub.Marshal()) == string(sigPubKeyMarshaled) {
-			result.Valid = true
-			result.SignerKey = email
-			return result, nil
-		}
+	allowed, signerName := signatureAllowed(sigPubKeyAuth, signers)
+	if allowed {
+		result.Valid = true
+		result.SignerKey = signerName
+		return result, nil
 	}
 
 	result.Error = "signature valid but key not in allowed signers"
 	result.SignerKey = ssh.FingerprintSHA256(sigPubKey)
 	return result, nil
+}
+
+func signatureAllowed(pubKeyData []byte, signers map[string][]byte) (bool, string) {
+	pub, _, _, _, err := ssh.ParseAuthorizedKey(pubKeyData)
+	if err != nil {
+		return false, ""
+	}
+	pubMarshaled := pub.Marshal()
+	for email, authKeyLine := range signers {
+		allowedPub, _, _, _, err := ssh.ParseAuthorizedKey(authKeyLine)
+		if err != nil {
+			continue
+		}
+		if string(allowedPub.Marshal()) == string(pubMarshaled) {
+			return true, email
+		}
+	}
+	return false, ""
 }

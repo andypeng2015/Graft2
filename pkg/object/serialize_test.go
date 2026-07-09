@@ -115,6 +115,30 @@ func TestMarshalTagDeterminism(t *testing.T) {
 	}
 }
 
+func TestTagSigningPayloadExcludesSignature(t *testing.T) {
+	unsigned := []byte("object aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n" +
+		"type commit\n" +
+		"tag v1.0.0\n" +
+		"tagger Alice <alice@example.com> 1700000000 +0000\n\n" +
+		"release\n")
+	signed := AddTagSignature(unsigned, "sshsig-v1:ssh-ed25519:cHVibGlj:sWduYXR1cmU=")
+
+	if got := TagSignature(signed); got != "sshsig-v1:ssh-ed25519:cHVibGlj:sWduYXR1cmU=" {
+		t.Fatalf("TagSignature = %q", got)
+	}
+	if bytes.Contains(TagSigningPayload(signed), []byte("\nsignature ")) {
+		t.Fatalf("signing payload contains signature header:\n%s", TagSigningPayload(signed))
+	}
+	if !bytes.Equal(TagSigningPayload(signed), unsigned) {
+		t.Fatalf("TagSigningPayload mismatch:\ngot:\n%s\nwant:\n%s", TagSigningPayload(signed), unsigned)
+	}
+
+	resigned := AddTagSignature(signed, "sshsig-v1:ssh-ed25519:bmV3:LXNpZw==")
+	if !bytes.Equal(TagSigningPayload(resigned), unsigned) {
+		t.Fatalf("signing payload changed when only tag signature changed")
+	}
+}
+
 func TestMarshalUnmarshalEntity(t *testing.T) {
 	orig := &EntityObj{
 		Kind:     "function",
@@ -227,6 +251,29 @@ func TestMarshalEntityListEmpty(t *testing.T) {
 	}
 	if len(got.EntityRefs) != 0 {
 		t.Errorf("EntityRefs should be empty, got %d", len(got.EntityRefs))
+	}
+}
+
+func TestMarshalUnmarshalEntityListDiagnostics(t *testing.T) {
+	orig := &EntityListObj{
+		Language: "go",
+		Path:     "main.go",
+		Diagnostics: []EntityExtractionDiagnostic{{
+			Severity: "warning",
+			Code:     "entity_extraction_parse_errors",
+			Message:  "syntax errors detected",
+		}},
+	}
+	data := MarshalEntityList(orig)
+	got, err := UnmarshalEntityList(data)
+	if err != nil {
+		t.Fatalf("UnmarshalEntityList: %v", err)
+	}
+	if len(got.Diagnostics) != 1 {
+		t.Fatalf("len(Diagnostics) = %d, want 1", len(got.Diagnostics))
+	}
+	if got.Diagnostics[0] != orig.Diagnostics[0] {
+		t.Fatalf("Diagnostics[0] = %+v, want %+v", got.Diagnostics[0], orig.Diagnostics[0])
 	}
 }
 
@@ -441,6 +488,45 @@ func TestMarshalUnmarshalCommitWithSignature(t *testing.T) {
 	}
 	if got.Signature != orig.Signature {
 		t.Fatalf("Signature: got %q, want %q", got.Signature, orig.Signature)
+	}
+}
+
+func TestCommitSigningPayloadExcludesSignature(t *testing.T) {
+	signed := &CommitObj{
+		TreeHash:           Hash("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+		Parents:            []Hash{Hash("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")},
+		Author:             "Signed <signed@example.com>",
+		Timestamp:          1700000003,
+		AuthorTimezone:     "+0000",
+		Committer:          "Signer <signer@example.com>",
+		CommitterTimestamp: 1700000100,
+		CommitterTimezone:  "-0700",
+		Signature:          "sshsig-v1:ssh-ed25519:cHVibGlj:sWduYXR1cmU=",
+		Message:            "signed commit",
+	}
+
+	unsigned := *signed
+	unsigned.Signature = ""
+	want := MarshalCommit(&unsigned)
+	got := CommitSigningPayload(signed)
+
+	if !bytes.Equal(got, want) {
+		t.Fatalf("CommitSigningPayload mismatch:\ngot:\n%s\nwant:\n%s", got, want)
+	}
+	if bytes.Contains(got, []byte("\nsignature ")) {
+		t.Fatalf("signing payload contains signature header:\n%s", got)
+	}
+
+	resigned := *signed
+	resigned.Signature = "sshsig-v1:ssh-ed25519:bmV3LXB1YmxpYw==:bmV3LXNpZw=="
+	if !bytes.Equal(CommitSigningPayload(&resigned), got) {
+		t.Fatalf("signing payload changed when only the signature changed")
+	}
+
+	modified := *signed
+	modified.Message = "modified commit"
+	if bytes.Equal(CommitSigningPayload(&modified), got) {
+		t.Fatalf("signing payload did not change when signed commit content changed")
 	}
 }
 

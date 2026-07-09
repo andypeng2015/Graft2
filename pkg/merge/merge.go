@@ -27,6 +27,13 @@ type MergeStats struct {
 	Conflicts      int
 }
 
+const (
+	MergeConfidenceStructuralClean           = "structural_clean"
+	MergeConfidenceStructuralWithDiagnostics = "structural_with_diagnostics"
+	MergeConfidenceTextFallback              = "text_fallback"
+	MergeConfidenceConflictRequired          = "conflict_required"
+)
+
 // MergeResult holds the output of a structural three-way merge.
 type MergeResult struct {
 	Merged          []byte
@@ -35,6 +42,7 @@ type MergeResult struct {
 	Stats           MergeStats
 	EntityConflicts []EntityConflictDetail
 	Diagnostics     []Diagnostic
+	Confidence      string
 }
 
 // MergeFiles performs a structural three-way merge of source files.
@@ -213,6 +221,7 @@ func MergeFiles(path string, base, ours, theirs []byte) (*MergeResult, error) {
 			result.Diagnostics = append(result.Diagnostics, diags...)
 		}
 	}
+	result.Confidence = classifyStructuralMergeConfidence(result)
 
 	// Post-merge validation gate: if the structural merge introduced a syntax
 	// error that neither input side had, do not present it as clean. Fall back
@@ -225,10 +234,27 @@ func MergeFiles(path string, base, ours, theirs []byte) (*MergeResult, error) {
 			Message:  "structural merge produced invalid syntax; fell back to line-level merge",
 			Rule:     "post-merge-syntax-gate",
 		})
+		fb.Confidence = MergeConfidenceTextFallback
+		if fb.HasConflicts {
+			fb.Confidence = MergeConfidenceConflictRequired
+		}
 		return fb, nil
 	}
 
 	return result, nil
+}
+
+func classifyStructuralMergeConfidence(result *MergeResult) string {
+	if result == nil {
+		return ""
+	}
+	if result.HasConflicts {
+		return MergeConfidenceConflictRequired
+	}
+	if len(result.Diagnostics) > 0 {
+		return MergeConfidenceStructuralWithDiagnostics
+	}
+	return MergeConfidenceStructuralClean
 }
 
 // resolveConflict handles entities where both sides modified differently.
@@ -497,6 +523,7 @@ func mergeTextFallback(base, ours, theirs []byte) *MergeResult {
 		HasConflicts:  conflictCount > 0,
 		ConflictCount: conflictCount,
 		Stats:         stats,
+		Confidence:    fallbackConfidence(conflictCount > 0),
 	}
 }
 
@@ -506,20 +533,23 @@ func mergeBinaryFallback(base, ours, theirs []byte) *MergeResult {
 	case bytes.Equal(ours, theirs):
 		stats.Unchanged = 1
 		return &MergeResult{
-			Merged: append([]byte(nil), ours...),
-			Stats:  stats,
+			Merged:     append([]byte(nil), ours...),
+			Stats:      stats,
+			Confidence: MergeConfidenceTextFallback,
 		}
 	case bytes.Equal(base, ours):
 		stats.TheirsModified = 1
 		return &MergeResult{
-			Merged: append([]byte(nil), theirs...),
-			Stats:  stats,
+			Merged:     append([]byte(nil), theirs...),
+			Stats:      stats,
+			Confidence: MergeConfidenceTextFallback,
 		}
 	case bytes.Equal(base, theirs):
 		stats.OursModified = 1
 		return &MergeResult{
-			Merged: append([]byte(nil), ours...),
-			Stats:  stats,
+			Merged:     append([]byte(nil), ours...),
+			Stats:      stats,
+			Confidence: MergeConfidenceTextFallback,
 		}
 	default:
 		// Keep ours bytes intact and force an explicit conflict state.
@@ -529,8 +559,16 @@ func mergeBinaryFallback(base, ours, theirs []byte) *MergeResult {
 			HasConflicts:  true,
 			ConflictCount: 1,
 			Stats:         stats,
+			Confidence:    MergeConfidenceConflictRequired,
 		}
 	}
+}
+
+func fallbackConfidence(hasConflicts bool) string {
+	if hasConflicts {
+		return MergeConfidenceConflictRequired
+	}
+	return MergeConfidenceTextFallback
 }
 
 func isBinaryContent(data []byte) bool {

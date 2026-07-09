@@ -40,6 +40,35 @@ func (c *HooksConfig) ForPoint(point string) []HookEntry {
 	return result
 }
 
+// WithoutRepoHooks returns a copy with repo-sourced hooks removed.
+func (c *HooksConfig) WithoutRepoHooks() *HooksConfig {
+	if c == nil {
+		return &HooksConfig{}
+	}
+	filtered := &HooksConfig{}
+	for _, h := range c.Hooks {
+		if h.Source == "repo" {
+			continue
+		}
+		filtered.Hooks = append(filtered.Hooks, h)
+	}
+	return filtered
+}
+
+// LoadHooksConfig reads hooks and filters repo-sourced hooks unless this repo
+// has explicitly trusted them.
+func (r *Repo) LoadHooksConfig(userHooks map[string]map[string]HookEntry) (*HooksConfig, error) {
+	cfg, err := LoadHooksConfig(r.RootDir, userHooks)
+	if err != nil {
+		return nil, err
+	}
+	trusted, err := r.HooksTrusted()
+	if err != nil || !trusted {
+		return cfg.WithoutRepoHooks(), nil
+	}
+	return cfg, nil
+}
+
 // rawHooksFile is the intermediate representation of hooks.toml.
 // The TOML format is:
 //

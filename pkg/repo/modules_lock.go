@@ -49,6 +49,12 @@ func (r *Repo) ReadModuleLock() (*ModuleLock, error) {
 
 // WriteModuleLock atomically writes .graftmodules.lock to the repository root.
 func (r *Repo) WriteModuleLock(lock *ModuleLock) error {
+	return r.withRepositoryLock("module-lock-write", func() error {
+		return r.writeModuleLock(lock)
+	})
+}
+
+func (r *Repo) writeModuleLock(lock *ModuleLock) error {
 	if lock == nil {
 		lock = &ModuleLock{}
 	}
@@ -60,30 +66,5 @@ func (r *Repo) WriteModuleLock(lock *ModuleLock) error {
 		return fmt.Errorf("write modules lock: marshal: %w", err)
 	}
 	data = append(data, '\n')
-
-	tmp, err := os.CreateTemp(r.RootDir, ".graftmodules-lock-tmp-*")
-	if err != nil {
-		return fmt.Errorf("write modules lock: tmpfile: %w", err)
-	}
-	tmpName := tmp.Name()
-
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		os.Remove(tmpName)
-		return fmt.Errorf("write modules lock: write: %w", err)
-	}
-	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		os.Remove(tmpName)
-		return fmt.Errorf("write modules lock: sync: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		os.Remove(tmpName)
-		return fmt.Errorf("write modules lock: close: %w", err)
-	}
-	if err := os.Rename(tmpName, r.moduleLockPath()); err != nil {
-		os.Remove(tmpName)
-		return fmt.Errorf("write modules lock: rename: %w", err)
-	}
-	return nil
+	return writeFileAtomic(r.moduleLockPath(), data, 0o644)
 }

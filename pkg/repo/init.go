@@ -78,15 +78,22 @@ func Init(path string) (*Repo, error) {
 
 	// Write default HEAD.
 	headPath := filepath.Join(graftDir, "HEAD")
-	if err := os.WriteFile(headPath, []byte("ref: refs/heads/main\n"), 0o644); err != nil {
+	if err := writeFileAtomic(headPath, []byte("ref: refs/heads/main\n"), 0o644); err != nil {
 		return nil, fmt.Errorf("init: write HEAD: %w", err)
 	}
 
-	return &Repo{
+	r := &Repo{
 		RootDir:  path,
 		GraftDir: graftDir,
 		Store:    object.NewStore(graftDir),
-	}, nil
+	}
+	if err := r.WriteRepositoryConfig(defaultRepositoryConfig(time.Now())); err != nil {
+		return nil, fmt.Errorf("init: write repository config: %w", err)
+	}
+	if err := r.SetHooksTrusted(true); err != nil {
+		return nil, fmt.Errorf("init: trust local hooks: %w", err)
+	}
+	return r, nil
 }
 
 // Open searches upward from path for a .graft/ directory (or .graft file for
@@ -109,11 +116,11 @@ func Open(path string) (*Repo, error) {
 		if lerr == nil {
 			// 1. Real directory — normal repository.
 			if linfo.IsDir() {
-				return &Repo{
+				return openRepoChecked(&Repo{
 					RootDir:  cur,
 					GraftDir: graftPath,
 					Store:    object.NewStore(graftPath),
-				}, nil
+				})
 			}
 
 			// 2. Symlink — check for module working tree.
@@ -132,11 +139,11 @@ func Open(path string) (*Repo, error) {
 					return nil, fmt.Errorf("open: stat .graft symlink target: %w", err)
 				}
 				if info.IsDir() {
-					return &Repo{
+					return openRepoChecked(&Repo{
 						RootDir:  cur,
 						GraftDir: graftPath,
 						Store:    object.NewStore(graftPath),
-					}, nil
+					})
 				}
 				// Symlink to a file — treat as linked worktree.
 				return openLinkedWorktree(cur, graftPath)
@@ -174,12 +181,12 @@ func openModuleWorktree(rootDir, symlinkPath, target string) (*Repo, error) {
 	}
 	parentGraftDir := metaDir[:idx]
 
-	return &Repo{
+	return openRepoChecked(&Repo{
 		RootDir:   rootDir,
 		GraftDir:  metaDir,
 		CommonDir: parentGraftDir,
 		Store:     object.NewStore(parentGraftDir),
-	}, nil
+	})
 }
 
 // openLinkedWorktree opens a Repo from a linked worktree where .graft is a
@@ -205,41 +212,24 @@ func openLinkedWorktree(rootDir, graftFile string) (*Repo, error) {
 	// Clean the path to resolve any ".." segments.
 	commonDir = filepath.Clean(commonDir)
 
-	return &Repo{
+	return openRepoChecked(&Repo{
 		RootDir:   rootDir,
 		GraftDir:  wtGraftDir,
 		CommonDir: commonDir,
 		Store:     object.NewStore(commonDir),
-	}, nil
+	})
+}
+
+func openRepoChecked(r *Repo) (*Repo, error) {
+	if err := r.CheckRepositoryFormat(); err != nil {
+		return nil, fmt.Errorf("open: %w", err)
+	}
+	return r, nil
 }
 
 // writeHeadAtomic atomically writes the HEAD file using temp+fsync+rename.
 func (r *Repo) writeHeadAtomic(content string) error {
-	headPath := filepath.Join(r.GraftDir, "HEAD")
-	tmpPath := headPath + ".lock"
-	f, err := os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
-	if err != nil {
-		return fmt.Errorf("write HEAD: create temp: %w", err)
-	}
-	if _, err := f.WriteString(content); err != nil {
-		f.Close()
-		os.Remove(tmpPath)
-		return fmt.Errorf("write HEAD: write: %w", err)
-	}
-	if err := f.Sync(); err != nil {
-		f.Close()
-		os.Remove(tmpPath)
-		return fmt.Errorf("write HEAD: sync: %w", err)
-	}
-	if err := f.Close(); err != nil {
-		os.Remove(tmpPath)
-		return fmt.Errorf("write HEAD: close: %w", err)
-	}
-	if err := os.Rename(tmpPath, headPath); err != nil {
-		os.Remove(tmpPath)
-		return fmt.Errorf("write HEAD: rename: %w", err)
-	}
-	return nil
+	return writeFileAtomic(filepath.Join(r.GraftDir, "HEAD"), []byte(content), 0o644)
 }
 
 // setHeadSymbolic atomically sets HEAD to a symbolic ref.
@@ -395,6 +385,9 @@ func (r *Repo) UpdateRefCAS(name string, h object.Hash, expectedOld ...object.Ha
 	if err := os.Rename(lockPath, refPath); err != nil {
 		return fmt.Errorf("update ref %q: rename: %w", name, err)
 	}
+	if err := fsyncParentDir(refPath); err != nil {
+		return fmt.Errorf("update ref %q: sync parent: %w", name, err)
+	}
 	cleanupLock = false
 	r.InvalidateMergeBaseCache()
 
@@ -446,6 +439,9 @@ func (r *Repo) DeleteRefCAS(name string, expectedOld object.Hash) error {
 
 	if err := os.Remove(refPath); err != nil {
 		return fmt.Errorf("delete ref %q: remove: %w", name, err)
+	}
+	if err := fsyncParentDir(refPath); err != nil {
+		return fmt.Errorf("delete ref %q: sync parent: %w", name, err)
 	}
 
 	_ = lockFile.Close()

@@ -174,3 +174,63 @@ func TestForPoint(t *testing.T) {
 		t.Fatalf("ForPoint(post-merge) len = %d, want 0", len(none))
 	}
 }
+
+func TestRepoLoadHooksConfigFiltersRepoHooksWhenUntrusted(t *testing.T) {
+	r, err := Init(t.TempDir())
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	tomlContent := `
+[pre-commit.repo-lint]
+run = "golangci-lint run"
+`
+	if err := os.WriteFile(filepath.Join(r.RootDir, "hooks.toml"), []byte(tomlContent), 0o644); err != nil {
+		t.Fatalf("write hooks.toml: %v", err)
+	}
+	if err := r.SetHooksTrusted(false); err != nil {
+		t.Fatalf("SetHooksTrusted(false): %v", err)
+	}
+
+	userHooks := map[string]map[string]HookEntry{
+		"pre-commit": {
+			"user-format": {Run: "gofmt -w ."},
+		},
+	}
+	cfg, err := r.LoadHooksConfig(userHooks)
+	if err != nil {
+		t.Fatalf("LoadHooksConfig: %v", err)
+	}
+	preCommit := cfg.ForPoint("pre-commit")
+	if len(preCommit) != 1 {
+		t.Fatalf("pre-commit hooks len = %d, want 1 user hook: %+v", len(preCommit), preCommit)
+	}
+	if preCommit[0].Name != "user-format" || preCommit[0].Source != "user" {
+		t.Fatalf("remaining hook = %+v, want user-format user hook", preCommit[0])
+	}
+}
+
+func TestRepoLoadHooksConfigKeepsRepoHooksWhenTrusted(t *testing.T) {
+	r, err := Init(t.TempDir())
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	tomlContent := `
+[pre-commit.repo-lint]
+run = "golangci-lint run"
+`
+	if err := os.WriteFile(filepath.Join(r.RootDir, "hooks.toml"), []byte(tomlContent), 0o644); err != nil {
+		t.Fatalf("write hooks.toml: %v", err)
+	}
+
+	cfg, err := r.LoadHooksConfig(nil)
+	if err != nil {
+		t.Fatalf("LoadHooksConfig: %v", err)
+	}
+	preCommit := cfg.ForPoint("pre-commit")
+	if len(preCommit) != 1 {
+		t.Fatalf("pre-commit hooks len = %d, want 1 repo hook", len(preCommit))
+	}
+	if preCommit[0].Name != "repo-lint" || preCommit[0].Source != "repo" {
+		t.Fatalf("hook = %+v, want repo-lint repo hook", preCommit[0])
+	}
+}

@@ -1,6 +1,8 @@
 package repo
 
 import (
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -57,6 +59,26 @@ func TestStructuralGrep_FindsFunctions(t *testing.T) {
 	if results[1].StartLine <= results[0].StartLine {
 		t.Errorf("results not sorted: line %d should be after line %d",
 			results[1].StartLine, results[0].StartLine)
+	}
+}
+
+func TestStructuralGrepHonorsCanceledContext(t *testing.T) {
+	dir := t.TempDir()
+	r, err := Init(dir)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	writeFile(t, filepath.Join(dir, "main.go"), []byte(testGoSource))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err = r.StructuralGrep(StructuralGrepOptions{
+		Context: ctx,
+		Pattern: `func $NAME($$$PARAMS) string`,
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("StructuralGrep error = %v, want context.Canceled", err)
 	}
 }
 

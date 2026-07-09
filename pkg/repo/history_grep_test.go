@@ -1,6 +1,8 @@
 package repo
 
 import (
+	"context"
+	"errors"
 	"path/filepath"
 	"testing"
 )
@@ -99,6 +101,25 @@ func TestHistoryGrep_FindsMatchAcrossCommits(t *testing.T) {
 	}
 	if results[0].Path != "main.go" {
 		t.Errorf("Path = %q, want %q", results[0].Path, "main.go")
+	}
+}
+
+func TestHistoryGrepHonorsCanceledContext(t *testing.T) {
+	dir := t.TempDir()
+	r, err := Init(dir)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err = r.HistoryGrep(HistoryGrepOptions{
+		Context: ctx,
+		Pattern: `func $NAME($$$PARAMS) string`,
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("HistoryGrep error = %v, want context.Canceled", err)
 	}
 }
 

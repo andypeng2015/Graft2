@@ -1,6 +1,7 @@
 package repo
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,6 +16,27 @@ func rebaseWriteFile(t *testing.T, path string, content []byte) {
 	}
 	if err := os.WriteFile(path, content, 0o644); err != nil {
 		t.Fatalf("WriteFile(%s): %v", path, err)
+	}
+}
+
+func TestRebaseAutostashPopUsesWarningWriter(t *testing.T) {
+	r, err := Init(t.TempDir())
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	seq := r.rebaseSeq()
+	if err := seq.Init(); err != nil {
+		t.Fatalf("seq.Init: %v", err)
+	}
+	if err := seq.WriteFile("autostash", "missing\n"); err != nil {
+		t.Fatalf("write autostash marker: %v", err)
+	}
+
+	var warnings bytes.Buffer
+	r.autostashPop(&warnings)
+
+	if !strings.Contains(warnings.String(), "warning: autostash pop") {
+		t.Fatalf("warnings = %q, want autostash warning", warnings.String())
 	}
 }
 

@@ -13,6 +13,12 @@ import (
 
 // CreateTag creates or updates a lightweight tag ref under refs/tags/.
 func (r *Repo) CreateTag(name string, target object.Hash, force bool) error {
+	return r.withRepositoryLock("tag-create", func() error {
+		return r.createTag(name, target, force)
+	})
+}
+
+func (r *Repo) createTag(name string, target object.Hash, force bool) error {
 	name = strings.TrimSpace(name)
 	if strings.HasPrefix(name, "coord/") {
 		return fmt.Errorf("refs/coord/ namespace is reserved for coordination")
@@ -40,6 +46,22 @@ func (r *Repo) CreateTag(name string, target object.Hash, force bool) error {
 // CreateAnnotatedTag creates or updates an annotated tag ref under refs/tags/.
 // The ref points at a stored tag object, which in turn points at target.
 func (r *Repo) CreateAnnotatedTag(name string, target object.Hash, tagger, message string, force bool) (object.Hash, error) {
+	return r.CreateAnnotatedTagWithSigner(name, target, tagger, message, force, nil)
+}
+
+// CreateAnnotatedTagWithSigner creates an annotated tag and signs the canonical
+// tag payload when signer is provided.
+func (r *Repo) CreateAnnotatedTagWithSigner(name string, target object.Hash, tagger, message string, force bool, signer CommitSigner) (object.Hash, error) {
+	var tagHash object.Hash
+	err := r.withRepositoryLock("tag-create", func() error {
+		var createErr error
+		tagHash, createErr = r.createAnnotatedTag(name, target, tagger, message, force, signer)
+		return createErr
+	})
+	return tagHash, err
+}
+
+func (r *Repo) createAnnotatedTag(name string, target object.Hash, tagger, message string, force bool, signer CommitSigner) (object.Hash, error) {
 	name = strings.TrimSpace(name)
 	if err := validateTagName(name); err != nil {
 		return "", fmt.Errorf("create annotated tag: %w", err)
@@ -69,23 +91,30 @@ func (r *Repo) CreateAnnotatedTag(name string, target object.Hash, tagger, messa
 	}
 
 	now := time.Now()
-	payload := fmt.Sprintf(
+	header := fmt.Sprintf(
 		"object %s\n"+
 			"type %s\n"+
 			"tag %s\n"+
-			"tagger %s %d %s\n\n"+
-			"%s\n",
+			"tagger %s %d %s\n",
 		target,
 		targetType,
 		name,
 		tagger,
 		now.Unix(),
 		formatTimezoneOffset(now),
-		message,
 	)
+	body := message + "\n"
+	payload := []byte(header + "\n" + body)
+	if signer != nil {
+		signature, err := signer(object.TagSigningPayload(payload))
+		if err != nil {
+			return "", fmt.Errorf("create annotated tag: sign tag: %w", err)
+		}
+		payload = object.AddTagSignature(payload, signature)
+	}
 	tagHash, err := r.Store.WriteTag(&object.TagObj{
 		TargetHash: target,
-		Data:       []byte(payload),
+		Data:       payload,
 	})
 	if err != nil {
 		return "", fmt.Errorf("create annotated tag: write tag object: %w", err)
@@ -99,6 +128,12 @@ func (r *Repo) CreateAnnotatedTag(name string, target object.Hash, tagger, messa
 
 // DeleteTag removes a tag ref from refs/tags/.
 func (r *Repo) DeleteTag(name string) error {
+	return r.withRepositoryLock("tag-delete", func() error {
+		return r.deleteTag(name)
+	})
+}
+
+func (r *Repo) deleteTag(name string) error {
 	name = strings.TrimSpace(name)
 	if err := validateTagName(name); err != nil {
 		return fmt.Errorf("delete tag: %w", err)

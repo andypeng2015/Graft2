@@ -1,6 +1,7 @@
 package repo
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"path/filepath"
@@ -109,10 +110,13 @@ func Hello(name string) string {
 		Message: "Consider using a typed return",
 	}
 
-	// warn should not return an error.
-	err = runGrepHook(context.Background(), r, entry)
+	var warnings bytes.Buffer
+	err = runGrepHookWithOptions(context.Background(), r, entry, HookRunOptions{WarningWriter: &warnings})
 	if err != nil {
 		t.Fatalf("expected warn action to not return error, got: %v", err)
+	}
+	if got := warnings.String(); !strings.Contains(got, "Consider using a typed return") {
+		t.Fatalf("warnings = %q, want grep warning detail", got)
 	}
 }
 

@@ -23,6 +23,7 @@ type FileMergeReport struct {
 	ConflictCount   int
 	EntityConflicts []merge.EntityConflictDetail
 	Diagnostics     []merge.Diagnostic
+	Confidence      string
 }
 
 // MergeReport is the overall result of a repository-level merge.
@@ -575,6 +576,7 @@ func (r *Repo) buildMergeReport(branchName string) (*mergeReportInput, error) {
 				Status:      "clean",
 				EntityCount: f.Conflicts,
 				Diagnostics: f.Diagnostics,
+				Confidence:  f.Confidence,
 			})
 		case "conflict":
 			report.Files = append(report.Files, FileMergeReport{
@@ -583,6 +585,7 @@ func (r *Repo) buildMergeReport(branchName string) (*mergeReportInput, error) {
 				ConflictCount:   f.Conflicts,
 				EntityConflicts: f.EntityConflicts,
 				Diagnostics:     f.Diagnostics,
+				Confidence:      f.Confidence,
 			})
 			// Determine blob hashes for conflict state.
 			var bh, oh, th object.Hash
@@ -600,13 +603,15 @@ func (r *Repo) buildMergeReport(branchName string) (*mergeReportInput, error) {
 			})
 		case "added":
 			report.Files = append(report.Files, FileMergeReport{
-				Path:   f.Path,
-				Status: "added",
+				Path:       f.Path,
+				Status:     "added",
+				Confidence: f.Confidence,
 			})
 		case "deleted":
 			report.Files = append(report.Files, FileMergeReport{
-				Path:   f.Path,
-				Status: "deleted",
+				Path:       f.Path,
+				Status:     "deleted",
+				Confidence: f.Confidence,
 			})
 			deletedPaths = append(deletedPaths, f.Path)
 		}
@@ -630,6 +635,7 @@ func (r *Repo) buildMergeReport(branchName string) (*mergeReportInput, error) {
 				Path:          c.Path,
 				Status:        "conflict",
 				ConflictCount: 1,
+				Confidence:    merge.MergeConfidenceConflictRequired,
 			})
 		}
 	}
@@ -667,6 +673,16 @@ func (r *Repo) MergePreview(branchName string) (*MergeReport, error) {
 //  6. If clean: write files, stage, auto-commit with two parents
 //  7. If conflicts: write conflict-marker files, save merge state, do NOT commit
 func (r *Repo) Merge(branchName string) (*MergeReport, error) {
+	var report *MergeReport
+	err := r.withRepositoryLock("merge", func() error {
+		var mergeErr error
+		report, mergeErr = r.merge(branchName)
+		return mergeErr
+	})
+	return report, err
+}
+
+func (r *Repo) merge(branchName string) (*MergeReport, error) {
 	input, err := r.buildMergeReport(branchName)
 	if err != nil {
 		return nil, err
@@ -728,7 +744,7 @@ func (r *Repo) Merge(branchName string) (*MergeReport, error) {
 			pathsToAdd = append(pathsToAdd, mf.path)
 		}
 		if len(pathsToAdd) > 0 {
-			if err := r.Add(pathsToAdd); err != nil {
+			if err := r.add(pathsToAdd, nil, AddOptions{}); err != nil {
 				return nil, fmt.Errorf("merge: stage: %w", err)
 			}
 		}
@@ -787,15 +803,17 @@ func (r *Repo) Merge(branchName string) (*MergeReport, error) {
 
 // mergeFastForward performs a fast-forward merge: HEAD is an ancestor of the
 // target, so we simply update HEAD and check out the target tree.
-func (r *Repo) mergeFastForward(branchName string, headHash, branchHash object.Hash) (*MergeReport, error) {
+func (r *Repo) mergeFastForward(branchName string, headHash, branchHash object.Hash) (report *MergeReport, err error) {
+	var tx *Transaction
+	defer func() {
+		if err != nil && tx != nil {
+			_ = tx.MarkNeedsRepair(err.Error())
+		}
+	}()
+
 	branchCommit, err := r.Store.ReadCommit(branchHash)
 	if err != nil {
 		return nil, fmt.Errorf("merge: read branch commit: %w", err)
-	}
-
-	// Check out the target tree.
-	if err := r.checkoutTree(branchCommit); err != nil {
-		return nil, fmt.Errorf("merge: fast-forward checkout: %w", err)
 	}
 
 	// Update the current branch ref to point to the target.
@@ -803,6 +821,29 @@ func (r *Repo) mergeFastForward(branchName string, headHash, branchHash object.H
 	if err != nil {
 		return nil, fmt.Errorf("merge: read HEAD: %w", err)
 	}
+	targetEntries, err := r.FlattenTree(branchCommit.TreeHash)
+	if err != nil {
+		return nil, fmt.Errorf("merge: fast-forward flatten target tree: %w", err)
+	}
+	tx, err = r.BeginTransaction("merge-fast-forward")
+	if err != nil {
+		return nil, fmt.Errorf("merge: fast-forward begin transaction: %w", err)
+	}
+	if err := tx.AddRef(headRefForTransaction(head), headHash, branchHash); err != nil {
+		return nil, fmt.Errorf("merge: fast-forward record transaction ref: %w", err)
+	}
+	if err := tx.AddFiles(treeEntryPaths(targetEntries)); err != nil {
+		return nil, fmt.Errorf("merge: fast-forward record transaction files: %w", err)
+	}
+	if err := tx.Prepare(); err != nil {
+		return nil, fmt.Errorf("merge: fast-forward prepare transaction: %w", err)
+	}
+
+	// Check out the target tree.
+	if err := r.checkoutTree(branchCommit); err != nil {
+		return nil, fmt.Errorf("merge: fast-forward checkout: %w", err)
+	}
+
 	if strings.HasPrefix(head, "refs/") {
 		if err := r.UpdateRefCAS(head, branchHash, headHash); err != nil {
 			return nil, fmt.Errorf("merge: update ref %q: %w", head, err)
@@ -815,6 +856,9 @@ func (r *Repo) mergeFastForward(branchName string, headHash, branchHash object.H
 
 	r.invalidateStatusCache()
 	_ = r.RunHook(HookPostMerge)
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("merge: fast-forward commit transaction: %w", err)
+	}
 
 	return &MergeReport{
 		IsFastForward: true,
@@ -886,7 +930,14 @@ func renderFileConflict(ours, theirs []byte) []byte {
 // commitMerge creates a commit with two parents (for merge commits).
 // This is similar to Commit() but takes explicit parent hashes instead
 // of deriving them from HEAD.
-func (r *Repo) commitMerge(message, author string, parent1, parent2 object.Hash) (object.Hash, error) {
+func (r *Repo) commitMerge(message, author string, parent1, parent2 object.Hash) (commitHash object.Hash, err error) {
+	var tx *Transaction
+	defer func() {
+		if err != nil && tx != nil {
+			_ = tx.MarkNeedsRepair(err.Error())
+		}
+	}()
+
 	stg, err := r.ReadStaging()
 	if err != nil {
 		return "", fmt.Errorf("merge commit: %w", err)
@@ -908,7 +959,7 @@ func (r *Repo) commitMerge(message, author string, parent1, parent2 object.Hash)
 		Message:   message,
 	}
 
-	commitHash, err := r.Store.WriteCommit(commitObj)
+	commitHash, err = r.Store.WriteCommit(commitObj)
 	if err != nil {
 		return "", fmt.Errorf("merge commit: write: %w", err)
 	}
@@ -917,6 +968,19 @@ func (r *Repo) commitMerge(message, author string, parent1, parent2 object.Hash)
 	head, err := r.Head()
 	if err != nil {
 		return "", fmt.Errorf("merge commit: read HEAD: %w", err)
+	}
+	tx, err = r.BeginTransaction("merge-commit")
+	if err != nil {
+		return "", fmt.Errorf("merge commit: begin transaction: %w", err)
+	}
+	if err := tx.AddRef(headRefForTransaction(head), parent1, commitHash); err != nil {
+		return "", fmt.Errorf("merge commit: record transaction ref: %w", err)
+	}
+	if err := tx.AddFiles(stagingPaths(stg)); err != nil {
+		return "", fmt.Errorf("merge commit: record transaction files: %w", err)
+	}
+	if err := tx.Prepare(); err != nil {
+		return "", fmt.Errorf("merge commit: prepare transaction: %w", err)
 	}
 	if strings.HasPrefix(head, "refs/") {
 		if err := r.UpdateRefCAS(head, commitHash, parent1); err != nil {
@@ -932,8 +996,39 @@ func (r *Repo) commitMerge(message, author string, parent1, parent2 object.Hash)
 
 	r.GitShadowSyncSnapshot(message, author)
 	r.recordGitShadowCommit(commitHash)
+	if err := tx.Commit(); err != nil {
+		return "", fmt.Errorf("merge commit: commit transaction: %w", err)
+	}
 
 	return commitHash, nil
+}
+
+func headRefForTransaction(head string) string {
+	if strings.HasPrefix(head, "refs/") {
+		return head
+	}
+	return "HEAD"
+}
+
+func treeEntryPaths(entries []TreeFileEntry) []string {
+	paths := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		paths = append(paths, entry.Path)
+	}
+	sort.Strings(paths)
+	return paths
+}
+
+func stagingPaths(stg *Staging) []string {
+	if stg == nil {
+		return nil
+	}
+	paths := make([]string, 0, len(stg.Entries))
+	for path := range stg.Entries {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	return paths
 }
 
 // readBlobData reads a blob from the store and returns its raw data.

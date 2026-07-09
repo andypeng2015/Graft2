@@ -24,6 +24,10 @@ type Repo struct {
 	statusHashCache   map[string]statusFileHashCacheEntry
 	statusBlobHasher  func([]byte) object.Hash
 
+	repositoryLockMu    sync.Mutex
+	repositoryLock      *RepositoryLock
+	repositoryLockDepth int
+
 	shallowOnce  sync.Once
 	shallowState *remote.ShallowState
 	shallowErr   error

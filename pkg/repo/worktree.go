@@ -12,27 +12,10 @@ import (
 
 // writeWorktreeFileAtomic atomically writes a file in the given directory.
 func writeWorktreeFileAtomic(dir, name, content string) error {
-	target := filepath.Join(dir, name)
-	tmp, err := os.CreateTemp(dir, name+".tmp.*")
-	if err != nil {
-		return fmt.Errorf("write %s: create temp: %w", name, err)
+	if err := writeFileAtomic(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+		return fmt.Errorf("write %s: %w", name, err)
 	}
-	tmpPath := tmp.Name()
-	if _, err := tmp.WriteString(content); err != nil {
-		tmp.Close()
-		os.Remove(tmpPath)
-		return fmt.Errorf("write %s: write: %w", name, err)
-	}
-	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		os.Remove(tmpPath)
-		return fmt.Errorf("write %s: sync: %w", name, err)
-	}
-	if err := tmp.Close(); err != nil {
-		os.Remove(tmpPath)
-		return fmt.Errorf("write %s: close: %w", name, err)
-	}
-	return os.Rename(tmpPath, target)
+	return nil
 }
 
 // WorktreeInfo describes a single worktree (main or linked).
@@ -53,6 +36,16 @@ func (r *Repo) IsLinkedWorktree() bool {
 // WorktreeAdd creates a linked worktree at path, checked out on the given
 // branch. It returns a *Repo pointing at the new worktree.
 func (r *Repo) WorktreeAdd(path, branch string) (*Repo, error) {
+	var wtRepo *Repo
+	err := r.withRepositoryLock("worktree-add", func() error {
+		var addErr error
+		wtRepo, addErr = r.worktreeAdd(path, branch)
+		return addErr
+	})
+	return wtRepo, err
+}
+
+func (r *Repo) worktreeAdd(path, branch string) (wtRepo *Repo, err error) {
 	// Cannot nest: linked worktrees cannot create further worktrees.
 	if r.IsLinkedWorktree() {
 		return nil, fmt.Errorf("worktree add: cannot add a worktree from a linked worktree")
@@ -77,6 +70,25 @@ func (r *Repo) WorktreeAdd(path, branch string) (*Repo, error) {
 	wtMetaDir := filepath.Join(r.GraftDir, "worktrees", name)
 	if _, err := os.Stat(wtMetaDir); err == nil {
 		return nil, fmt.Errorf("worktree add: worktree %q already exists", name)
+	}
+
+	tx, err := r.BeginTransaction("worktree-add")
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.MarkNeedsRepair(err.Error())
+		}
+	}()
+	if err := tx.AddFiles([]string{
+		filepath.ToSlash(filepath.Join(".graft", "worktrees", name)),
+		"worktree:" + filepath.ToSlash(absPath),
+	}); err != nil {
+		return nil, err
+	}
+	if err := tx.Prepare(); err != nil {
+		return nil, err
 	}
 
 	// Create the worktree working directory.
@@ -111,12 +123,12 @@ func (r *Repo) WorktreeAdd(path, branch string) (*Repo, error) {
 
 	// Write a .graft FILE (not directory) in the worktree path.
 	graftFileContent := "gitdir: " + wtMetaDir + "\n"
-	if err := os.WriteFile(filepath.Join(absPath, ".graft"), []byte(graftFileContent), 0o644); err != nil {
+	if err := writeFileAtomic(filepath.Join(absPath, ".graft"), []byte(graftFileContent), 0o644); err != nil {
 		return nil, fmt.Errorf("worktree add: write .graft file: %w", err)
 	}
 
 	// Build the worktree Repo for writing files and staging.
-	wtRepo := &Repo{
+	wtRepo = &Repo{
 		RootDir:   absPath,
 		GraftDir:  wtMetaDir,
 		CommonDir: r.GraftDir,
@@ -170,6 +182,9 @@ func (r *Repo) WorktreeAdd(path, branch string) (*Repo, error) {
 		return nil, fmt.Errorf("worktree add: write staging: %w", err)
 	}
 
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
 	return wtRepo, nil
 }
 
@@ -269,6 +284,12 @@ func (r *Repo) WorktreeList() ([]WorktreeInfo, error) {
 // WorktreeRemove removes a linked worktree by name. It removes both the
 // worktree working directory and the metadata in .graft/worktrees/<name>/.
 func (r *Repo) WorktreeRemove(name string) error {
+	return r.withRepositoryLock("worktree-remove", func() error {
+		return r.worktreeRemove(name)
+	})
+}
+
+func (r *Repo) worktreeRemove(name string) (err error) {
 	mainGraftDir := r.GraftDir
 	if r.IsLinkedWorktree() {
 		mainGraftDir = r.CommonDir
@@ -283,13 +304,35 @@ func (r *Repo) WorktreeRemove(name string) error {
 	}
 
 	// Read the worktree path.
+	var wtPath string
 	pathData, err := os.ReadFile(filepath.Join(wtMetaDir, "path"))
 	if err == nil {
-		wtPath := strings.TrimSpace(string(pathData))
-		if wtPath != "" {
-			if err := os.RemoveAll(wtPath); err != nil {
-				return fmt.Errorf("worktree remove: remove working directory %q: %w", wtPath, err)
-			}
+		wtPath = strings.TrimSpace(string(pathData))
+	}
+
+	touchedPaths := []string{filepath.ToSlash(filepath.Join(".graft", "worktrees", name))}
+	if wtPath != "" {
+		touchedPaths = append(touchedPaths, "worktree:"+filepath.ToSlash(wtPath))
+	}
+	tx, err := r.BeginTransaction("worktree-remove")
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.MarkNeedsRepair(err.Error())
+		}
+	}()
+	if err := tx.AddFiles(touchedPaths); err != nil {
+		return err
+	}
+	if err := tx.Prepare(); err != nil {
+		return err
+	}
+
+	if wtPath != "" {
+		if err := os.RemoveAll(wtPath); err != nil {
+			return fmt.Errorf("worktree remove: remove working directory %q: %w", wtPath, err)
 		}
 	}
 
@@ -298,12 +341,18 @@ func (r *Repo) WorktreeRemove(name string) error {
 		return fmt.Errorf("worktree remove: remove metadata %q: %w", wtMetaDir, err)
 	}
 
-	return nil
+	return tx.Commit()
 }
 
 // WorktreePrune removes stale worktree entries where the working directory
 // no longer exists on disk.
 func (r *Repo) WorktreePrune() error {
+	return r.withRepositoryLock("worktree-prune", func() error {
+		return r.worktreePrune()
+	})
+}
+
+func (r *Repo) worktreePrune() (err error) {
 	mainGraftDir := r.GraftDir
 	if r.IsLinkedWorktree() {
 		mainGraftDir = r.CommonDir
@@ -318,6 +367,12 @@ func (r *Repo) WorktreePrune() error {
 		return fmt.Errorf("worktree prune: read worktrees dir: %w", err)
 	}
 
+	type staleWorktree struct {
+		name    string
+		metaDir string
+		path    string
+	}
+	var stale []staleWorktree
 	for _, e := range entries {
 		if !e.IsDir() {
 			continue
@@ -328,20 +383,49 @@ func (r *Repo) WorktreePrune() error {
 		pathData, err := os.ReadFile(filepath.Join(wtMetaDir, "path"))
 		if err != nil {
 			// No path file -- stale entry.
-			if err := os.RemoveAll(wtMetaDir); err != nil {
-				return fmt.Errorf("worktree prune: remove %q: %w", name, err)
-			}
+			stale = append(stale, staleWorktree{name: name, metaDir: wtMetaDir})
 			continue
 		}
 
 		wtPath := strings.TrimSpace(string(pathData))
 		if _, err := os.Stat(wtPath); os.IsNotExist(err) {
 			// Working directory gone -- stale.
-			if err := os.RemoveAll(wtMetaDir); err != nil {
-				return fmt.Errorf("worktree prune: remove %q: %w", name, err)
-			}
+			stale = append(stale, staleWorktree{name: name, metaDir: wtMetaDir, path: wtPath})
 		}
 	}
 
-	return nil
+	if len(stale) == 0 {
+		return nil
+	}
+
+	touchedPaths := make([]string, 0, len(stale)*2)
+	for _, wt := range stale {
+		touchedPaths = append(touchedPaths, filepath.ToSlash(filepath.Join(".graft", "worktrees", wt.name)))
+		if wt.path != "" {
+			touchedPaths = append(touchedPaths, "worktree:"+filepath.ToSlash(wt.path))
+		}
+	}
+	tx, err := r.BeginTransaction("worktree-prune")
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.MarkNeedsRepair(err.Error())
+		}
+	}()
+	if err := tx.AddFiles(touchedPaths); err != nil {
+		return err
+	}
+	if err := tx.Prepare(); err != nil {
+		return err
+	}
+
+	for _, wt := range stale {
+		if err := os.RemoveAll(wt.metaDir); err != nil {
+			return fmt.Errorf("worktree prune: remove %q: %w", wt.name, err)
+		}
+	}
+
+	return tx.Commit()
 }

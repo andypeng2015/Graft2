@@ -1,14 +1,75 @@
 package repo
 
 import (
+	"bytes"
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/odvcencio/graft/pkg/object"
 )
+
+func TestInteractiveRebaseEditorWithOptionsRoutesOutput(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("interactive rebase process tests require unix shell scripts")
+	}
+
+	r, err := Init(t.TempDir())
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	editor := writeScript(t, r.RootDir, "editor.sh", "#!/bin/sh\necho editor-out\necho editor-err >&2\n")
+	t.Setenv("VISUAL", editor)
+
+	todoPath := filepath.Join(r.RootDir, "todo.txt")
+	if err := os.WriteFile(todoPath, []byte("pick abc12345 subject\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile todo: %v", err)
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if err := r.runInteractiveRebaseEditor(todoPath, "test-editor", InteractiveRebaseOptions{
+		Stdout: &stdout,
+		Stderr: &stderr,
+	}); err != nil {
+		t.Fatalf("runInteractiveRebaseEditor: %v", err)
+	}
+	if got := stdout.String(); !strings.Contains(got, "editor-out") {
+		t.Fatalf("stdout = %q, want editor stdout", got)
+	}
+	if got := stderr.String(); !strings.Contains(got, "editor-err") {
+		t.Fatalf("stderr = %q, want editor stderr", got)
+	}
+}
+
+func TestInteractiveRebaseExecCommandWithOptionsRoutesOutput(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("interactive rebase process tests require unix shell scripts")
+	}
+
+	r, err := Init(t.TempDir())
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if err := r.execCommandWithOptions("printf 'exec-out\\n'; printf 'exec-err\\n' >&2", InteractiveRebaseOptions{
+		Stdout: &stdout,
+		Stderr: &stderr,
+	}); err != nil {
+		t.Fatalf("execCommandWithOptions: %v", err)
+	}
+	if got := stdout.String(); !strings.Contains(got, "exec-out") {
+		t.Fatalf("stdout = %q, want exec stdout", got)
+	}
+	if got := stderr.String(); !strings.Contains(got, "exec-err") {
+		t.Fatalf("stderr = %q, want exec stderr", got)
+	}
+}
 
 // TestParseTodoList_AllActions verifies that parseTodoList correctly parses
 // all action types and ignores comments and blank lines.

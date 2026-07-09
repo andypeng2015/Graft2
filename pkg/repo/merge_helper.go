@@ -18,6 +18,7 @@ type ThreeWayFileResult struct {
 	Conflicts       int
 	EntityConflicts []merge.EntityConflictDetail
 	Diagnostics     []merge.Diagnostic
+	Confidence      string
 }
 
 // ThreeWayMergeResult holds the outcome of a complete three-way tree merge.
@@ -65,10 +66,11 @@ func (r *Repo) threeWayTreeMerge(
 					return nil, err
 				}
 				result.Files = append(result.Files, ThreeWayFileResult{
-					Path:    path,
-					Content: content,
-					Mode:    normalizeFileMode(theirsMap[path].Mode),
-					Status:  "clean",
+					Path:       path,
+					Content:    content,
+					Mode:       normalizeFileMode(theirsMap[path].Mode),
+					Status:     "clean",
+					Confidence: merge.MergeConfidenceStructuralClean,
 				})
 				continue
 			}
@@ -112,6 +114,7 @@ func (r *Repo) threeWayTreeMerge(
 				Conflicts:       mergeResult.ConflictCount,
 				EntityConflicts: mergeResult.EntityConflicts,
 				Diagnostics:     mergeResult.Diagnostics,
+				Confidence:      mergeResult.Confidence,
 			})
 
 		case !inBase && !inOurs && inTheirs:
@@ -121,10 +124,11 @@ func (r *Repo) threeWayTreeMerge(
 				return nil, err
 			}
 			result.Files = append(result.Files, ThreeWayFileResult{
-				Path:    path,
-				Content: content,
-				Mode:    normalizeFileMode(theirsMap[path].Mode),
-				Status:  "added",
+				Path:       path,
+				Content:    content,
+				Mode:       normalizeFileMode(theirsMap[path].Mode),
+				Status:     "added",
+				Confidence: merge.MergeConfidenceStructuralClean,
 			})
 
 		case !inBase && inOurs && inTheirs:
@@ -163,6 +167,7 @@ func (r *Repo) threeWayTreeMerge(
 				Conflicts:       mergeResult.ConflictCount,
 				EntityConflicts: mergeResult.EntityConflicts,
 				Diagnostics:     mergeResult.Diagnostics,
+				Confidence:      mergeResult.Confidence,
 			})
 
 		case inBase && inOurs && !inTheirs:
@@ -170,8 +175,9 @@ func (r *Repo) threeWayTreeMerge(
 			if oursMap[path].BlobHash == baseMap[path].BlobHash {
 				// Ours unchanged -- clean delete.
 				result.Files = append(result.Files, ThreeWayFileResult{
-					Path:   path,
-					Status: "deleted",
+					Path:       path,
+					Status:     "deleted",
+					Confidence: merge.MergeConfidenceStructuralClean,
 				})
 				result.DeletedPaths = append(result.DeletedPaths, path)
 			} else {
@@ -185,11 +191,12 @@ func (r *Repo) threeWayTreeMerge(
 				}
 				content := renderFileConflict(oursData, nil)
 				result.Files = append(result.Files, ThreeWayFileResult{
-					Path:      path,
-					Content:   content,
-					Mode:      normalizeFileMode(oursMap[path].Mode),
-					Status:    "conflict",
-					Conflicts: 1,
+					Path:       path,
+					Content:    content,
+					Mode:       normalizeFileMode(oursMap[path].Mode),
+					Status:     "conflict",
+					Conflicts:  1,
+					Confidence: merge.MergeConfidenceConflictRequired,
 				})
 			}
 
@@ -198,8 +205,9 @@ func (r *Repo) threeWayTreeMerge(
 			if theirsMap[path].BlobHash == baseMap[path].BlobHash {
 				// Theirs unchanged -- keep deletion.
 				result.Files = append(result.Files, ThreeWayFileResult{
-					Path:   path,
-					Status: "deleted",
+					Path:       path,
+					Status:     "deleted",
+					Confidence: merge.MergeConfidenceStructuralClean,
 				})
 				result.DeletedPaths = append(result.DeletedPaths, path)
 			} else {
@@ -213,11 +221,12 @@ func (r *Repo) threeWayTreeMerge(
 				}
 				content := renderFileConflict(nil, theirsData)
 				result.Files = append(result.Files, ThreeWayFileResult{
-					Path:      path,
-					Content:   content,
-					Mode:      normalizeFileMode(theirsMap[path].Mode),
-					Status:    "conflict",
-					Conflicts: 1,
+					Path:       path,
+					Content:    content,
+					Mode:       normalizeFileMode(theirsMap[path].Mode),
+					Status:     "conflict",
+					Conflicts:  1,
+					Confidence: merge.MergeConfidenceConflictRequired,
 				})
 			}
 
@@ -231,8 +240,9 @@ func (r *Repo) threeWayTreeMerge(
 		case inBase && !inOurs && !inTheirs:
 			// Both deleted -- already gone.
 			result.Files = append(result.Files, ThreeWayFileResult{
-				Path:   path,
-				Status: "deleted",
+				Path:       path,
+				Status:     "deleted",
+				Confidence: merge.MergeConfidenceStructuralClean,
 			})
 			result.DeletedPaths = append(result.DeletedPaths, path)
 		}

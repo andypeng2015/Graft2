@@ -60,6 +60,12 @@ func (r *Repo) ResolveAuthor() string {
 // signature string to be persisted in CommitObj.Signature.
 type CommitSigner func(payload []byte) (string, error)
 
+// CommitOptions controls optional commit behaviors.
+type CommitOptions struct {
+	Signer CommitSigner
+	Hooks  HookRunOptions
+}
+
 // Commit creates a new commit from the current staging area.
 //
 //  1. Read staging
@@ -70,13 +76,34 @@ type CommitSigner func(payload []byte) (string, error)
 //  6. Update current branch ref to new commit hash
 //  7. Return commit hash
 func (r *Repo) Commit(message, author string) (object.Hash, error) {
-	return r.CommitWithSigner(message, author, nil)
+	return r.CommitWithOptions(message, author, CommitOptions{})
 }
 
 // CommitWithSigner creates a new commit and signs it when signer is provided.
-func (r *Repo) CommitWithSigner(message, author string, signer CommitSigner) (object.Hash, error) {
+func (r *Repo) CommitWithSigner(message, author string, signer CommitSigner) (commitHash object.Hash, err error) {
+	return r.CommitWithOptions(message, author, CommitOptions{Signer: signer})
+}
+
+// CommitWithOptions creates a new commit with explicit optional behaviors.
+func (r *Repo) CommitWithOptions(message, author string, opts CommitOptions) (commitHash object.Hash, err error) {
+	err = r.withRepositoryLock("commit", func() error {
+		var commitErr error
+		commitHash, commitErr = r.commitWithOptions(message, author, opts)
+		return commitErr
+	})
+	return commitHash, err
+}
+
+func (r *Repo) commitWithOptions(message, author string, opts CommitOptions) (commitHash object.Hash, err error) {
+	var tx *Transaction
+	defer func() {
+		if err != nil && tx != nil {
+			_ = tx.MarkNeedsRepair(err.Error())
+		}
+	}()
+
 	// 0a. Run pre-commit hook. If it fails, abort.
-	if err := r.RunHook(HookPreCommit); err != nil {
+	if err := r.RunHookWithOptions(HookPreCommit, opts.Hooks); err != nil {
 		return "", fmt.Errorf("commit: %w", err)
 	}
 
@@ -86,7 +113,7 @@ func (r *Repo) CommitWithSigner(message, author string, signer CommitSigner) (ob
 	if err := os.WriteFile(msgFile, []byte(message), 0o644); err != nil {
 		return "", fmt.Errorf("commit: write message file: %w", err)
 	}
-	if err := r.RunHook(HookCommitMsg, msgFile); err != nil {
+	if err := r.RunHookWithOptions(HookCommitMsg, opts.Hooks, msgFile); err != nil {
 		os.Remove(msgFile)
 		return "", fmt.Errorf("commit: %w", err)
 	}
@@ -114,7 +141,7 @@ func (r *Repo) CommitWithSigner(message, author string, signer CommitSigner) (ob
 		stagedPaths = append(stagedPaths, p)
 	}
 	sort.Strings(stagedPaths)
-	r.RunHooksForPointByName(string(HookPreCommitAnalysis), []byte(strings.Join(stagedPaths, "\n")), false)
+	r.RunHooksForPointByNameWithOptions(string(HookPreCommitAnalysis), []byte(strings.Join(stagedPaths, "\n")), false, opts.Hooks)
 
 	// 2. Build tree from staging.
 	treeHash, err := r.BuildTree(stg)
@@ -138,29 +165,45 @@ func (r *Repo) CommitWithSigner(message, author string, signer CommitSigner) (ob
 		Timestamp: time.Now().Unix(),
 		Message:   message,
 	}
-	if signer != nil {
+	if opts.Signer != nil {
 		payload := object.CommitSigningPayload(commitObj)
-		signature, err := signer(payload)
+		signature, err := opts.Signer(payload)
 		if err != nil {
 			return "", fmt.Errorf("commit: sign commit: %w", err)
 		}
 		commitObj.Signature = signature
 	}
 
-	// 5. Write commit to store.
-	commitHash, err := r.Store.WriteCommit(commitObj)
-	if err != nil {
-		return "", fmt.Errorf("commit: write commit: %w", err)
-	}
-
-	// 6. Update current branch ref.
+	// 5. Resolve the ref that will move and start a transaction before
+	// writing immutable objects or refs.
 	head, err := r.Head()
 	if err != nil {
 		return "", fmt.Errorf("commit: read HEAD: %w", err)
 	}
+	tx, err = r.BeginTransaction("commit")
+	if err != nil {
+		return "", fmt.Errorf("commit: begin transaction: %w", err)
+	}
+	for _, p := range stagedPaths {
+		if err := tx.AddFile(p); err != nil {
+			return "", fmt.Errorf("commit: record transaction file %q: %w", p, err)
+		}
+	}
+
+	// 6. Write commit to store.
+	commitHash, err = r.Store.WriteCommit(commitObj)
+	if err != nil {
+		return "", fmt.Errorf("commit: write commit: %w", err)
+	}
 
 	// head is either a ref path ("refs/heads/main") or a detached hash.
 	if strings.HasPrefix(head, "refs/") {
+		if err := tx.AddRef(head, parentHash, commitHash); err != nil {
+			return "", fmt.Errorf("commit: record transaction ref %q: %w", head, err)
+		}
+		if err := tx.Prepare(); err != nil {
+			return "", fmt.Errorf("commit: prepare transaction: %w", err)
+		}
 		var updateErr error
 		if parentHash == "" {
 			updateErr = r.UpdateRefCAS(head, commitHash)
@@ -172,9 +215,19 @@ func (r *Repo) CommitWithSigner(message, author string, signer CommitSigner) (ob
 		}
 	} else {
 		// Detached HEAD: update HEAD directly with a CAS against the old hash.
-		if err := r.UpdateRefCAS("HEAD", commitHash, object.Hash(strings.TrimSpace(head))); err != nil {
+		oldHead := object.Hash(strings.TrimSpace(head))
+		if err := tx.AddRef("HEAD", oldHead, commitHash); err != nil {
+			return "", fmt.Errorf("commit: record transaction detached HEAD: %w", err)
+		}
+		if err := tx.Prepare(); err != nil {
+			return "", fmt.Errorf("commit: prepare transaction: %w", err)
+		}
+		if err := r.UpdateRefCAS("HEAD", commitHash, oldHead); err != nil {
 			return "", fmt.Errorf("commit: update detached HEAD: %w", err)
 		}
+	}
+	if err := tx.Commit(); err != nil {
+		return "", fmt.Errorf("commit: commit transaction: %w", err)
 	}
 
 	r.invalidateStatusCache()
@@ -193,12 +246,33 @@ func (r *Repo) CommitWithSigner(message, author string, signer CommitSigner) (ob
 // HEAD commit (not HEAD itself). If message is empty, the original commit's
 // message is reused.
 func (r *Repo) CommitAmend(message, author string) (object.Hash, error) {
-	return r.CommitAmendWithSigner(message, author, nil)
+	return r.CommitAmendWithOptions(message, author, CommitOptions{})
 }
 
 // CommitAmendWithSigner is like CommitAmend but signs the new commit when
 // signer is non-nil.
-func (r *Repo) CommitAmendWithSigner(message, author string, signer CommitSigner) (object.Hash, error) {
+func (r *Repo) CommitAmendWithSigner(message, author string, signer CommitSigner) (commitHash object.Hash, err error) {
+	return r.CommitAmendWithOptions(message, author, CommitOptions{Signer: signer})
+}
+
+// CommitAmendWithOptions is like CommitAmend with explicit optional behaviors.
+func (r *Repo) CommitAmendWithOptions(message, author string, opts CommitOptions) (commitHash object.Hash, err error) {
+	err = r.withRepositoryLock("commit-amend", func() error {
+		var commitErr error
+		commitHash, commitErr = r.commitAmendWithOptions(message, author, opts)
+		return commitErr
+	})
+	return commitHash, err
+}
+
+func (r *Repo) commitAmendWithOptions(message, author string, opts CommitOptions) (commitHash object.Hash, err error) {
+	var tx *Transaction
+	defer func() {
+		if err != nil && tx != nil {
+			_ = tx.MarkNeedsRepair(err.Error())
+		}
+	}()
+
 	// 1. Read the current HEAD commit.
 	headHash, err := r.ResolveRef("HEAD")
 	if err != nil {
@@ -215,7 +289,7 @@ func (r *Repo) CommitAmendWithSigner(message, author string, signer CommitSigner
 	}
 
 	// 3. Run pre-commit hook.
-	if err := r.RunHook(HookPreCommit); err != nil {
+	if err := r.RunHookWithOptions(HookPreCommit, opts.Hooks); err != nil {
 		return "", fmt.Errorf("commit --amend: %w", err)
 	}
 
@@ -224,7 +298,7 @@ func (r *Repo) CommitAmendWithSigner(message, author string, signer CommitSigner
 	if err := os.WriteFile(msgFile, []byte(message), 0o644); err != nil {
 		return "", fmt.Errorf("commit --amend: write message file: %w", err)
 	}
-	if err := r.RunHook(HookCommitMsg, msgFile); err != nil {
+	if err := r.RunHookWithOptions(HookCommitMsg, opts.Hooks, msgFile); err != nil {
 		os.Remove(msgFile)
 		return "", fmt.Errorf("commit --amend: %w", err)
 	}
@@ -260,35 +334,59 @@ func (r *Repo) CommitAmendWithSigner(message, author string, signer CommitSigner
 		Timestamp: time.Now().Unix(),
 		Message:   message,
 	}
-	if signer != nil {
+	if opts.Signer != nil {
 		payload := object.CommitSigningPayload(commitObj)
-		signature, err := signer(payload)
+		signature, err := opts.Signer(payload)
 		if err != nil {
 			return "", fmt.Errorf("commit --amend: sign commit: %w", err)
 		}
 		commitObj.Signature = signature
 	}
 
-	// 8. Write the new commit to store.
-	commitHash, err := r.Store.WriteCommit(commitObj)
-	if err != nil {
-		return "", fmt.Errorf("commit --amend: write commit: %w", err)
-	}
-
-	// 9. Update current branch ref to point to the new commit.
+	// 8. Resolve the ref that will move and start the transaction.
 	head, err := r.Head()
 	if err != nil {
 		return "", fmt.Errorf("commit --amend: read HEAD: %w", err)
 	}
+	tx, err = r.BeginTransaction("commit-amend")
+	if err != nil {
+		return "", fmt.Errorf("commit --amend: begin transaction: %w", err)
+	}
+	for p := range stg.Entries {
+		if err := tx.AddFile(p); err != nil {
+			return "", fmt.Errorf("commit --amend: record transaction file %q: %w", p, err)
+		}
+	}
+
+	// 9. Write the new commit to store.
+	commitHash, err = r.Store.WriteCommit(commitObj)
+	if err != nil {
+		return "", fmt.Errorf("commit --amend: write commit: %w", err)
+	}
 
 	if strings.HasPrefix(head, "refs/") {
+		if err := tx.AddRef(head, headHash, commitHash); err != nil {
+			return "", fmt.Errorf("commit --amend: record transaction ref %q: %w", head, err)
+		}
+		if err := tx.Prepare(); err != nil {
+			return "", fmt.Errorf("commit --amend: prepare transaction: %w", err)
+		}
 		if err := r.UpdateRefCAS(head, commitHash, headHash); err != nil {
 			return "", fmt.Errorf("commit --amend: update ref %q: %w", head, err)
 		}
 	} else {
+		if err := tx.AddRef("HEAD", headHash, commitHash); err != nil {
+			return "", fmt.Errorf("commit --amend: record transaction detached HEAD: %w", err)
+		}
+		if err := tx.Prepare(); err != nil {
+			return "", fmt.Errorf("commit --amend: prepare transaction: %w", err)
+		}
 		if err := r.UpdateRefCAS("HEAD", commitHash, headHash); err != nil {
 			return "", fmt.Errorf("commit --amend: update detached HEAD: %w", err)
 		}
+	}
+	if err := tx.Commit(); err != nil {
+		return "", fmt.Errorf("commit --amend: commit transaction: %w", err)
 	}
 
 	r.invalidateStatusCache()
@@ -351,7 +449,23 @@ type commitStagingParams struct {
 // commitFromStaging reads the staging area, builds a tree, creates a commit,
 // and advances the current branch ref. Used by cherry-pick, revert, and
 // their --continue paths to avoid duplicating the stage→commit→ref-update flow.
-func (r *Repo) commitFromStaging(p commitStagingParams) (object.Hash, error) {
+func (r *Repo) commitFromStaging(p commitStagingParams) (commitHash object.Hash, err error) {
+	err = r.withRepositoryLock("commit-from-staging", func() error {
+		var commitErr error
+		commitHash, commitErr = r.commitFromStagingLocked(p)
+		return commitErr
+	})
+	return commitHash, err
+}
+
+func (r *Repo) commitFromStagingLocked(p commitStagingParams) (commitHash object.Hash, err error) {
+	var tx *Transaction
+	defer func() {
+		if err != nil && tx != nil {
+			_ = tx.MarkNeedsRepair(err.Error())
+		}
+	}()
+
 	stg, err := r.ReadStaging()
 	if err != nil {
 		return "", fmt.Errorf("read staging: %w", err)
@@ -373,11 +487,6 @@ func (r *Repo) commitFromStaging(p commitStagingParams) (object.Hash, error) {
 		Message:   p.Message,
 	}
 
-	commitHash, err := r.Store.WriteCommit(commitObj)
-	if err != nil {
-		return "", fmt.Errorf("write commit: %w", err)
-	}
-
 	headName := p.HeadName
 	if headName == "" {
 		head, err := r.Head()
@@ -387,14 +496,44 @@ func (r *Repo) commitFromStaging(p commitStagingParams) (object.Hash, error) {
 		headName = head
 	}
 
+	tx, err = r.BeginTransaction("commit-from-staging")
+	if err != nil {
+		return "", fmt.Errorf("begin transaction: %w", err)
+	}
+	for path := range stg.Entries {
+		if err := tx.AddFile(path); err != nil {
+			return "", fmt.Errorf("record transaction file %q: %w", path, err)
+		}
+	}
+
+	commitHash, err = r.Store.WriteCommit(commitObj)
+	if err != nil {
+		return "", fmt.Errorf("write commit: %w", err)
+	}
+
 	if strings.HasPrefix(headName, "refs/") {
+		if err := tx.AddRef(headName, p.HeadHash, commitHash); err != nil {
+			return "", fmt.Errorf("record transaction ref %q: %w", headName, err)
+		}
+		if err := tx.Prepare(); err != nil {
+			return "", fmt.Errorf("prepare transaction: %w", err)
+		}
 		if err := r.UpdateRefCAS(headName, commitHash, p.HeadHash); err != nil {
 			return "", fmt.Errorf("update ref %q: %w", headName, err)
 		}
 	} else {
+		if err := tx.AddRef("HEAD", p.HeadHash, commitHash); err != nil {
+			return "", fmt.Errorf("record transaction detached HEAD: %w", err)
+		}
+		if err := tx.Prepare(); err != nil {
+			return "", fmt.Errorf("prepare transaction: %w", err)
+		}
 		if err := r.UpdateRefCAS("HEAD", commitHash, p.HeadHash); err != nil {
 			return "", fmt.Errorf("update detached HEAD: %w", err)
 		}
+	}
+	if err := tx.Commit(); err != nil {
+		return "", fmt.Errorf("commit transaction: %w", err)
 	}
 
 	r.invalidateStatusCache()

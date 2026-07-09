@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/odvcencio/graft/pkg/object"
@@ -21,6 +22,19 @@ import (
 //  6. Update staging to match the new tree.
 //  7. Update HEAD (symbolic ref for branch, raw hash for detached).
 func (r *Repo) Checkout(target string) error {
+	return r.withRepositoryLock("checkout", func() error {
+		return r.checkout(target)
+	})
+}
+
+func (r *Repo) checkout(target string) (err error) {
+	var tx *Transaction
+	defer func() {
+		if err != nil && tx != nil {
+			_ = tx.MarkNeedsRepair(err.Error())
+		}
+	}()
+
 	// 1. Check for uncommitted changes.
 	if err := r.ensureClean(); err != nil {
 		return fmt.Errorf("checkout: %w", err)
@@ -64,6 +78,21 @@ func (r *Repo) Checkout(target string) error {
 	// 4. Determine files to remove: files in current HEAD tree + staging that
 	//    are NOT in the target tree.
 	currentFiles := r.trackedFiles()
+	oldHeadName, _ := r.Head()
+	oldHeadHash, _ := r.ResolveRef("HEAD")
+	tx, err = r.BeginTransaction("checkout")
+	if err != nil {
+		return fmt.Errorf("checkout: begin transaction: %w", err)
+	}
+	if err := tx.AddRef("HEAD", oldHeadHash, targetHash); err != nil {
+		return fmt.Errorf("checkout: record transaction ref: %w", err)
+	}
+	if err := tx.AddFiles(checkoutTransactionFiles(currentFiles, targetMap)); err != nil {
+		return fmt.Errorf("checkout: record transaction files: %w", err)
+	}
+	if err := tx.Prepare(); err != nil {
+		return fmt.Errorf("checkout: prepare transaction: %w", err)
+	}
 
 	sparseEnabled := r.IsSparseEnabled()
 
@@ -73,7 +102,10 @@ func (r *Repo) Checkout(target string) error {
 		if sparseEnabled && !r.matchesSparsePatterns(path) {
 			continue
 		}
-		absPath := filepath.Join(r.RootDir, filepath.FromSlash(path))
+		absPath, err := r.safeWorktreePath(path)
+		if err != nil {
+			return fmt.Errorf("checkout: unsafe path %q: %w", path, err)
+		}
 		if err := os.Remove(absPath); err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("checkout: remove %q: %w", path, err)
 		}
@@ -90,11 +122,14 @@ func (r *Repo) Checkout(target string) error {
 			continue
 		}
 
-		absPath := filepath.Join(r.RootDir, filepath.FromSlash(f.Path))
+		absPath, err := r.safeWorktreePath(f.Path)
+		if err != nil {
+			return fmt.Errorf("checkout: unsafe path %q: %w", f.Path, err)
+		}
 
 		// Create parent directories.
 		dir := filepath.Dir(absPath)
-		if err := os.MkdirAll(dir, 0o755); err != nil {
+		if err := ensureSafeParentDir(r.RootDir, absPath); err != nil {
 			return fmt.Errorf("checkout: mkdir %q: %w", dir, err)
 		}
 
@@ -129,7 +164,10 @@ func (r *Repo) Checkout(target string) error {
 			continue
 		}
 
-		absPath := filepath.Join(r.RootDir, filepath.FromSlash(f.Path))
+		absPath, err := r.safeWorktreePath(f.Path)
+		if err != nil {
+			return fmt.Errorf("checkout: unsafe path %q: %w", f.Path, err)
+		}
 		info, err := os.Stat(absPath)
 		if err != nil {
 			return fmt.Errorf("checkout: stat %q: %w", f.Path, err)
@@ -168,7 +206,111 @@ func (r *Repo) Checkout(target string) error {
 
 	r.GitShadowCheckout(target)
 
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("checkout: commit transaction: %w", err)
+	}
+	tx = nil
+
+	if err := r.appendReflog("HEAD", oldHeadHash, targetHash, checkoutReflogReason(oldHeadName, targetHash, target, isBranch)); err != nil {
+		return fmt.Errorf("checkout: record HEAD reflog: %w", err)
+	}
+
 	return nil
+}
+
+// PreviousCheckoutBranch returns the branch that was active before the most
+// recent checkout into the current branch or detached HEAD.
+func (r *Repo) PreviousCheckoutBranch() (string, error) {
+	entries, err := r.ReadHEADReflog(50)
+	if err != nil {
+		return "", err
+	}
+	currentBranch, _ := r.CurrentBranch()
+
+	for _, entry := range entries {
+		from, to, ok := parseCheckoutReflogReason(entry.Reason)
+		if !ok {
+			continue
+		}
+		if currentBranch != "" && to != currentBranch {
+			continue
+		}
+		if from == "" || from == currentBranch {
+			continue
+		}
+		if _, err := r.ResolveRef("refs/heads/" + from); err == nil {
+			return from, nil
+		}
+		if currentBranch != "" && to == currentBranch {
+			return "", fmt.Errorf("previous branch %q no longer exists", from)
+		}
+	}
+
+	return "", fmt.Errorf("no previous branch recorded")
+}
+
+func checkoutReflogReason(oldHeadName string, targetHash object.Hash, target string, isBranch bool) string {
+	return fmt.Sprintf("checkout: moving from %s to %s", checkoutHeadLabel(oldHeadName), checkoutTargetLabel(targetHash, target, isBranch))
+}
+
+func checkoutTargetLabel(targetHash object.Hash, target string, isBranch bool) string {
+	if isBranch {
+		return target
+	}
+	return checkoutHeadLabel(string(targetHash))
+}
+
+func checkoutHeadLabel(head string) string {
+	head = strings.TrimSpace(head)
+	if branch, ok := checkoutBranchName(head); ok {
+		return branch
+	}
+	if len(head) > 12 {
+		return head[:12]
+	}
+	if head == "" {
+		return "unknown"
+	}
+	return head
+}
+
+func checkoutBranchName(head string) (string, bool) {
+	const prefix = "refs/heads/"
+	if strings.HasPrefix(head, prefix) {
+		return strings.TrimPrefix(head, prefix), true
+	}
+	return "", false
+}
+
+func parseCheckoutReflogReason(reason string) (from string, to string, ok bool) {
+	const prefix = "checkout: moving from "
+	if !strings.HasPrefix(reason, prefix) {
+		return "", "", false
+	}
+	rest := strings.TrimPrefix(reason, prefix)
+	parts := strings.SplitN(rest, " to ", 2)
+	if len(parts) != 2 {
+		return "", "", false
+	}
+	from = strings.TrimSpace(parts[0])
+	to = strings.TrimSpace(parts[1])
+	return from, to, from != "" && to != ""
+}
+
+func checkoutTransactionFiles(current map[string]bool, target map[string]TreeFileEntry) []string {
+	seen := make(map[string]struct{}, len(current)+len(target))
+	for path := range current {
+		seen[path] = struct{}{}
+	}
+	for path := range target {
+		seen[path] = struct{}{}
+	}
+	out := make([]string, 0, len(seen))
+	for path := range seen {
+		out = append(out, path)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // ensureClean checks that the working tree has no uncommitted changes.

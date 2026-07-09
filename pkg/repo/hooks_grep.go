@@ -44,25 +44,34 @@ var langToGlob = map[string]string{
 // runGrepHook executes a structural grep hook against the working tree.
 // If matches are found, behaviour depends on entry.Action:
 //   - "block" (default): return an error to abort the hook chain
-//   - "warn": print matches to stdout and return nil
-func runGrepHook(_ context.Context, r *Repo, entry HookEntry) error {
+//   - "warn": print matches to the warning writer and return nil
+func runGrepHook(ctx context.Context, r *Repo, entry HookEntry) error {
+	return runGrepHookWithOptions(ctx, r, entry, HookRunOptions{})
+}
+
+func runGrepHookWithOptions(ctx context.Context, r *Repo, entry HookEntry, hookOpts HookRunOptions) error {
 	langFilter, pattern := parseGrepPattern(entry.Grep)
 	if pattern == "" {
 		return fmt.Errorf("hook %s.%s: empty grep pattern", entry.Point, entry.Name)
 	}
 
-	opts := StructuralGrepOptions{
+	grepCtx := ctx
+	if hookOpts.Context != nil {
+		grepCtx = hookOpts.context()
+	}
+	grepOpts := StructuralGrepOptions{
+		Context: grepCtx,
 		Pattern: pattern,
 	}
 	if langFilter != "" {
 		if glob, ok := langToGlob[langFilter]; ok {
-			opts.PathPattern = glob
+			grepOpts.PathPattern = glob
 		}
 		// If language is not in the map we still run; the tree-sitter
 		// language detection will decide which files apply.
 	}
 
-	results, err := r.StructuralGrep(opts)
+	results, err := r.StructuralGrep(grepOpts)
 	if err != nil {
 		// Pattern compilation failures are reported but non-fatal
 		// to avoid blocking on misconfigured patterns.
@@ -106,8 +115,7 @@ func runGrepHook(_ context.Context, r *Repo, entry HookEntry) error {
 	case "block":
 		return fmt.Errorf("%s", detail.String())
 	case "warn":
-		// Print warning but allow the operation to proceed.
-		fmt.Print(detail.String())
+		fmt.Fprint(hookOpts.warningWriter(), detail.String())
 		return nil
 	default:
 		return fmt.Errorf("hook %s.%s: unknown action %q (expected \"block\" or \"warn\")", entry.Point, entry.Name, entry.Action)

@@ -76,9 +76,16 @@ type EntityObj struct {
 
 // EntityListObj is an ordered list of entity references for a file.
 type EntityListObj struct {
-	Language   string
-	Path       string
-	EntityRefs []Hash // ordered refs to EntityObj hashes
+	Language    string
+	Path        string
+	EntityRefs  []Hash // ordered refs to EntityObj hashes
+	Diagnostics []EntityExtractionDiagnostic
+}
+
+type EntityExtractionDiagnostic struct {
+	Severity string
+	Code     string
+	Message  string
 }
 
 // TreeEntry is one entry in a tree object.

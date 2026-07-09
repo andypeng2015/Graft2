@@ -43,6 +43,46 @@ func TestReadConfigMissingReturnsEmptyConfig(t *testing.T) {
 	}
 }
 
+func TestHookTrustRoundTrip(t *testing.T) {
+	r, err := Init(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	trusted, err := r.HooksTrusted()
+	if err != nil {
+		t.Fatalf("HooksTrusted: %v", err)
+	}
+	if !trusted {
+		t.Fatal("fresh repo hooks trusted = false, want true")
+	}
+
+	if err := r.SetHooksTrusted(false); err != nil {
+		t.Fatalf("SetHooksTrusted(false): %v", err)
+	}
+	trusted, err = r.HooksTrusted()
+	if err != nil {
+		t.Fatalf("HooksTrusted after false: %v", err)
+	}
+	if trusted {
+		t.Fatal("hooks trusted after false = true")
+	}
+
+	if err := r.SetHooksTrusted(true); err != nil {
+		t.Fatalf("SetHooksTrusted(true): %v", err)
+	}
+	cfg, err := r.ReadConfig()
+	if err != nil {
+		t.Fatalf("ReadConfig: %v", err)
+	}
+	if cfg.Hooks == nil || !cfg.Hooks.Trusted {
+		t.Fatalf("hooks trust config = %+v, want trusted", cfg.Hooks)
+	}
+	if cfg.Hooks.TrustedAt == "" {
+		t.Fatal("TrustedAt is empty after trusting hooks")
+	}
+}
+
 func TestListRefs(t *testing.T) {
 	r, err := Init(t.TempDir())
 	if err != nil {

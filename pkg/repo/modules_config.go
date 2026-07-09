@@ -2,6 +2,7 @@ package repo
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"io"
 	"os"
@@ -248,26 +249,11 @@ func (r *Repo) ReadGraftModulesFile() ([]ModuleEntry, error) {
 
 // WriteGraftModulesFile atomically writes .graftmodules to the repository root.
 func (r *Repo) WriteGraftModulesFile(modules []ModuleEntry) error {
-	p := filepath.Join(r.RootDir, ".graftmodules")
-
-	tmp, err := os.CreateTemp(r.RootDir, ".graftmodules-tmp-*")
-	if err != nil {
-		return fmt.Errorf("write .graftmodules: tmpfile: %w", err)
-	}
-	tmpName := tmp.Name()
-
-	if err := WriteGraftModules(tmp, modules); err != nil {
-		tmp.Close()
-		os.Remove(tmpName)
-		return fmt.Errorf("write .graftmodules: write: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		os.Remove(tmpName)
-		return fmt.Errorf("write .graftmodules: close: %w", err)
-	}
-	if err := os.Rename(tmpName, p); err != nil {
-		os.Remove(tmpName)
-		return fmt.Errorf("write .graftmodules: rename: %w", err)
-	}
-	return nil
+	return r.withRepositoryLock("modules-config-write", func() error {
+		var buf bytes.Buffer
+		if err := WriteGraftModules(&buf, modules); err != nil {
+			return fmt.Errorf("write .graftmodules: write: %w", err)
+		}
+		return writeFileAtomic(filepath.Join(r.RootDir, ".graftmodules"), buf.Bytes(), 0o644)
+	})
 }

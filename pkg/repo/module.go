@@ -72,6 +72,12 @@ func (r *Repo) GetModule(name string) (*Module, error) {
 // validates that no existing module shares the same name or path, and creates
 // the per-module metadata directory at .graft/modules/<name>/refs/.
 func (r *Repo) AddModuleEntry(entry ModuleEntry) error {
+	return r.withRepositoryLock("module-add", func() error {
+		return r.addModuleEntry(entry)
+	})
+}
+
+func (r *Repo) addModuleEntry(entry ModuleEntry) (err error) {
 	entries, err := r.ReadGraftModulesFile()
 	if err != nil {
 		return err
@@ -86,6 +92,25 @@ func (r *Repo) AddModuleEntry(entry ModuleEntry) error {
 		}
 	}
 
+	tx, err := r.BeginTransaction("module-add")
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.MarkNeedsRepair(err.Error())
+		}
+	}()
+	if err := tx.AddFiles([]string{
+		".graftmodules",
+		filepath.ToSlash(filepath.Join(".graft", "modules", entry.Name)),
+	}); err != nil {
+		return err
+	}
+	if err := tx.Prepare(); err != nil {
+		return err
+	}
+
 	entries = append(entries, entry)
 	if err := r.WriteGraftModulesFile(entries); err != nil {
 		return err
@@ -97,13 +122,19 @@ func (r *Repo) AddModuleEntry(entry ModuleEntry) error {
 		return fmt.Errorf("add module: mkdir metadata: %w", err)
 	}
 
-	return nil
+	return tx.Commit()
 }
 
 // RemoveModuleEntry removes a module by name from .graftmodules and
 // .graftmodules.lock, and deletes its metadata directory. It returns an error
 // if no module with that name exists.
 func (r *Repo) RemoveModuleEntry(name string) error {
+	return r.withRepositoryLock("module-remove", func() error {
+		return r.removeModuleEntry(name)
+	})
+}
+
+func (r *Repo) removeModuleEntry(name string) (err error) {
 	entries, err := r.ReadGraftModulesFile()
 	if err != nil {
 		return err
@@ -120,6 +151,26 @@ func (r *Repo) RemoveModuleEntry(name string) error {
 	}
 	if !found {
 		return fmt.Errorf("remove module: %q not found", name)
+	}
+
+	tx, err := r.BeginTransaction("module-remove")
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.MarkNeedsRepair(err.Error())
+		}
+	}()
+	if err := tx.AddFiles([]string{
+		".graftmodules",
+		".graftmodules.lock",
+		filepath.ToSlash(filepath.Join(".graft", "modules", name)),
+	}); err != nil {
+		return err
+	}
+	if err := tx.Prepare(); err != nil {
+		return err
 	}
 
 	if err := r.WriteGraftModulesFile(filtered); err != nil {
@@ -144,7 +195,7 @@ func (r *Repo) RemoveModuleEntry(name string) error {
 		return fmt.Errorf("remove module: remove metadata dir: %w", err)
 	}
 
-	return nil
+	return tx.Commit()
 }
 
 // UpdateModuleLock updates (or creates) the lock file entry for a single
@@ -152,6 +203,12 @@ func (r *Repo) RemoveModuleEntry(name string) error {
 // commit and resolved URL, and copies the track/pin values from the module
 // config.
 func (r *Repo) UpdateModuleLock(name string, commit object.Hash, resolvedURL string) error {
+	return r.withRepositoryLock("module-lock", func() error {
+		return r.updateModuleLock(name, commit, resolvedURL)
+	})
+}
+
+func (r *Repo) updateModuleLock(name string, commit object.Hash, resolvedURL string) (err error) {
 	// Read module config to get track/pin.
 	entries, err := r.ReadGraftModulesFile()
 	if err != nil {
@@ -183,5 +240,24 @@ func (r *Repo) UpdateModuleLock(name string, commit object.Hash, resolvedURL str
 		Pin:    entry.Pin,
 	}
 
-	return r.WriteModuleLock(lock)
+	tx, err := r.BeginTransaction("module-lock")
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.MarkNeedsRepair(err.Error())
+		}
+	}()
+	if err := tx.AddFile(".graftmodules.lock"); err != nil {
+		return err
+	}
+	if err := tx.Prepare(); err != nil {
+		return err
+	}
+
+	if err := r.WriteModuleLock(lock); err != nil {
+		return err
+	}
+	return tx.Commit()
 }

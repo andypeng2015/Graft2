@@ -54,47 +54,56 @@ func (r *Repo) SparseCheckoutList() ([]string, error) {
 // SparseCheckoutSet replaces the sparse-checkout patterns with the given
 // list and applies the result to the working tree.
 func (r *Repo) SparseCheckoutSet(patterns []string) error {
-	if err := r.writeSparsePatterns(patterns); err != nil {
-		return err
-	}
-	return r.applySparseCheckout()
+	return r.withRepositoryLock("sparse-checkout-set", func() error {
+		if err := r.writeSparsePatterns(patterns); err != nil {
+			return err
+		}
+		return r.applySparseCheckout()
+	})
 }
 
 // SparseCheckoutAdd appends patterns to the existing sparse-checkout list
 // (deduplicating) and applies the result to the working tree.
 func (r *Repo) SparseCheckoutAdd(patterns []string) error {
-	existing, err := r.SparseCheckoutList()
-	if err != nil {
-		return err
-	}
+	return r.withRepositoryLock("sparse-checkout-add", func() error {
+		existing, err := r.SparseCheckoutList()
+		if err != nil {
+			return err
+		}
 
-	seen := make(map[string]bool, len(existing))
-	for _, p := range existing {
-		seen[p] = true
-	}
-	for _, p := range patterns {
-		if !seen[p] {
-			existing = append(existing, p)
+		seen := make(map[string]bool, len(existing))
+		for _, p := range existing {
 			seen[p] = true
 		}
-	}
+		for _, p := range patterns {
+			if !seen[p] {
+				existing = append(existing, p)
+				seen[p] = true
+			}
+		}
 
-	if err := r.writeSparsePatterns(existing); err != nil {
-		return err
-	}
-	return r.applySparseCheckout()
+		if err := r.writeSparsePatterns(existing); err != nil {
+			return err
+		}
+		return r.applySparseCheckout()
+	})
 }
 
 // SparseCheckoutDisable disables sparse checkout by removing the sparse
 // file and materializing all files from the current HEAD tree.
 func (r *Repo) SparseCheckoutDisable() error {
-	path := r.sparseCheckoutPath()
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("sparse-checkout disable: %w", err)
-	}
+	return r.withRepositoryLock("sparse-checkout-disable", func() error {
+		path := r.sparseCheckoutPath()
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("sparse-checkout disable: %w", err)
+		}
+		if err := fsyncParentDir(path); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("sparse-checkout disable: sync parent: %w", err)
+		}
 
-	// Materialize all files that may have been excluded.
-	return r.applySparseCheckout()
+		// Materialize all files that may have been excluded.
+		return r.applySparseCheckout()
+	})
 }
 
 // writeSparsePatterns writes the given patterns to the sparse-checkout file,
@@ -111,7 +120,7 @@ func (r *Repo) writeSparsePatterns(patterns []string) error {
 		b.WriteByte('\n')
 	}
 
-	if err := os.WriteFile(r.sparseCheckoutPath(), []byte(b.String()), 0o644); err != nil {
+	if err := writeFileAtomic(r.sparseCheckoutPath(), []byte(b.String()), 0o644); err != nil {
 		return fmt.Errorf("sparse-checkout: write: %w", err)
 	}
 	return nil

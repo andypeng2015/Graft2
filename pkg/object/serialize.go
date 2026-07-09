@@ -2,6 +2,8 @@ package object
 
 import (
 	"bytes"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strconv"
@@ -183,6 +185,12 @@ func MarshalEntityList(el *EntityListObj) []byte {
 	fmt.Fprintf(&buf, "version %s\n", objectSerializationVersion)
 	fmt.Fprintf(&buf, "language %s\n", el.Language)
 	fmt.Fprintf(&buf, "path %s\n", el.Path)
+	if len(el.Diagnostics) > 0 {
+		data, err := json.Marshal(el.Diagnostics)
+		if err == nil {
+			fmt.Fprintf(&buf, "diagnostics %s\n", base64.StdEncoding.EncodeToString(data))
+		}
+	}
 	buf.WriteByte('\n')
 	for _, h := range el.EntityRefs {
 		fmt.Fprintf(&buf, "%s\n", string(h))
@@ -214,6 +222,14 @@ func UnmarshalEntityList(data []byte) (*EntityListObj, error) {
 			el.Language = val
 		case "path":
 			el.Path = val
+		case "diagnostics":
+			data, err := base64.StdEncoding.DecodeString(val)
+			if err != nil {
+				return nil, fmt.Errorf("unmarshal entitylist: diagnostics decode: %w", err)
+			}
+			if err := json.Unmarshal(data, &el.Diagnostics); err != nil {
+				return nil, fmt.Errorf("unmarshal entitylist: diagnostics unmarshal: %w", err)
+			}
 		default:
 			// Skip unknown keys for forward compatibility.
 			continue

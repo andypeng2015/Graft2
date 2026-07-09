@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/odvcencio/graft/pkg/object"
@@ -38,6 +39,16 @@ func (r *Repo) Fetch(remoteName string) (*FetchResult, error) {
 
 // FetchContext is like Fetch but accepts an explicit context.
 func (r *Repo) FetchContext(ctx context.Context, remoteName string) (*FetchResult, error) {
+	var result *FetchResult
+	err := r.withRepositoryLock("fetch", func() error {
+		var fetchErr error
+		result, fetchErr = r.fetchContext(ctx, remoteName)
+		return fetchErr
+	})
+	return result, err
+}
+
+func (r *Repo) fetchContext(ctx context.Context, remoteName string) (result *FetchResult, err error) {
 	remoteName = strings.TrimSpace(remoteName)
 	if remoteName == "" {
 		remoteName = "origin"
@@ -48,20 +59,45 @@ func (r *Repo) FetchContext(ctx context.Context, remoteName string) (*FetchResul
 		return nil, fmt.Errorf("fetch: %w", err)
 	}
 
-	result := &FetchResult{
+	result = &FetchResult{
 		RemoteName: remoteName,
 		RemoteURL:  remoteURL,
 	}
 
+	tx, err := r.BeginTransaction("fetch")
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.MarkNeedsRepair(err.Error())
+		}
+	}()
+	if err := tx.AddFiles([]string{
+		filepath.ToSlash(filepath.Join(".graft", "objects")),
+		filepath.ToSlash(filepath.Join(".graft", "refs", "remotes", remoteName)),
+	}); err != nil {
+		return nil, err
+	}
+	if err := tx.Prepare(); err != nil {
+		return nil, err
+	}
+
 	// Determine whether the remote is a local path or an HTTP endpoint.
 	if isLocalPath(remoteURL) {
-		if err := r.fetchFromLocal(ctx, remoteName, remoteURL, result); err != nil {
+		if err := r.fetchFromLocal(ctx, remoteName, remoteURL, result, tx); err != nil {
+			return nil, err
+		}
+		if err := tx.Commit(); err != nil {
 			return nil, err
 		}
 		return result, nil
 	}
 
-	if err := r.fetchFromRemote(ctx, remoteName, remoteURL, result); err != nil {
+	if err := r.fetchFromRemote(ctx, remoteName, remoteURL, result, tx); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
 	return result, nil
@@ -79,7 +115,7 @@ func isLocalPath(url string) bool {
 
 // fetchFromLocal fetches from a local graft repository by opening it,
 // listing its refs, and copying the full object graph.
-func (r *Repo) fetchFromLocal(_ context.Context, remoteName, path string, result *FetchResult) error {
+func (r *Repo) fetchFromLocal(_ context.Context, remoteName, path string, result *FetchResult, tx *Transaction) error {
 	srcRepo, err := Open(path)
 	if err != nil {
 		return fmt.Errorf("fetch: open local remote %q: %w", path, err)
@@ -121,6 +157,9 @@ func (r *Repo) fetchFromLocal(_ context.Context, remoteName, path string, result
 		if oldHash == h {
 			continue // already up to date
 		}
+		if err := tx.AddRef(trackingRef, oldHash, h); err != nil {
+			return fmt.Errorf("fetch: record tracking ref %q: %w", trackingRef, err)
+		}
 		if err := r.UpdateRef(trackingRef, h); err != nil {
 			return fmt.Errorf("fetch: update tracking ref %q: %w", trackingRef, err)
 		}
@@ -135,7 +174,7 @@ func (r *Repo) fetchFromLocal(_ context.Context, remoteName, path string, result
 }
 
 // fetchFromRemote fetches from an HTTP remote using the graft protocol client.
-func (r *Repo) fetchFromRemote(ctx context.Context, remoteName, remoteURL string, result *FetchResult) error {
+func (r *Repo) fetchFromRemote(ctx context.Context, remoteName, remoteURL string, result *FetchResult, tx *Transaction) error {
 	client, err := remote.NewClient(remoteURL)
 	if err != nil {
 		return fmt.Errorf("fetch: create client: %w", err)
@@ -179,6 +218,9 @@ func (r *Repo) fetchFromRemote(ctx context.Context, remoteName, remoteURL string
 		oldHash, _ := r.ResolveRef(trackingRef)
 		if oldHash == h {
 			continue
+		}
+		if err := tx.AddRef(trackingRef, oldHash, h); err != nil {
+			return fmt.Errorf("fetch: record tracking ref %q: %w", trackingRef, err)
 		}
 		if err := r.UpdateRef(trackingRef, h); err != nil {
 			return fmt.Errorf("fetch: update tracking ref %q: %w", trackingRef, err)

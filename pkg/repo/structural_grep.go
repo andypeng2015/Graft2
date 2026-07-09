@@ -17,6 +17,7 @@ import (
 
 // StructuralGrepOptions configures a structural (AST-aware) code search.
 type StructuralGrepOptions struct {
+	Context     context.Context
 	Pattern     string // code pattern with metavariables
 	PathPattern string // glob filter on file path
 	SExp        bool   // treat pattern as raw S-expression
@@ -45,6 +46,10 @@ func (r *Repo) StructuralGrep(opts StructuralGrepOptions) ([]StructuralGrepResul
 	if opts.Pattern == "" {
 		return nil, fmt.Errorf("structural grep: pattern must not be empty")
 	}
+	ctx := grepContext(opts.Context)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 
 	policy := grammars.DefaultPolicy()
 
@@ -69,12 +74,15 @@ func (r *Repo) StructuralGrep(opts StructuralGrepOptions) ([]StructuralGrepResul
 		}
 	}
 
-	ctx := context.Background()
 	ch, _ := grammars.WalkAndParse(ctx, r.RootDir, policy)
 
 	var results []StructuralGrepResult
 
 	for file := range ch {
+		if err := ctx.Err(); err != nil {
+			file.Close()
+			return nil, err
+		}
 		if file.Err != nil {
 			file.Close()
 			continue
@@ -172,7 +180,17 @@ func (r *Repo) StructuralGrep(opts StructuralGrepOptions) ([]StructuralGrepResul
 		return results[i].StartLine < results[j].StartLine
 	})
 
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	return results, nil
+}
+
+func grepContext(ctx context.Context) context.Context {
+	if ctx != nil {
+		return ctx
+	}
+	return context.Background()
 }
 
 // lineNumberAt returns the 1-based line number for the given byte offset in source.
@@ -212,6 +230,7 @@ func findEnclosingEntity(entities []entity.Entity, startByte, endByte uint32) *e
 
 // HistoryGrepOptions configures a structural search across commit history.
 type HistoryGrepOptions struct {
+	Context     context.Context
 	Pattern     string // code pattern with metavariables
 	PathPattern string // glob filter on file path
 	SExp        bool   // treat pattern as raw S-expression
@@ -241,6 +260,10 @@ type HistoryGrepResult struct {
 func (r *Repo) HistoryGrep(opts HistoryGrepOptions) ([]HistoryGrepResult, error) {
 	if opts.Pattern == "" {
 		return nil, fmt.Errorf("history grep: pattern must not be empty")
+	}
+	ctx := grepContext(opts.Context)
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 	if opts.MaxCommits <= 0 {
 		opts.MaxCommits = 1000
@@ -272,6 +295,9 @@ func (r *Repo) HistoryGrep(opts HistoryGrepOptions) ([]HistoryGrepResult, error)
 	walked := 0
 
 	for current != "" && walked < opts.MaxCommits {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		// If we've reached the Since boundary, stop.
 		if sinceHash != "" && current == sinceHash {
 			break
@@ -295,6 +321,9 @@ func (r *Repo) HistoryGrep(opts HistoryGrepOptions) ([]HistoryGrepResult, error)
 		}
 
 		for _, fe := range entries {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
 			relPath := fe.Path
 
 			// Apply path filter if specified.

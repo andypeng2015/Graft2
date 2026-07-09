@@ -23,21 +23,22 @@ import (
 
 // StagingEntry records the staged state of a single file.
 type StagingEntry struct {
-	Path           string      `json:"path"`
-	BlobHash       object.Hash `json:"blob_hash"`
-	EntityListHash object.Hash `json:"entity_list_hash,omitempty"`
-	Mode           string      `json:"mode,omitempty"`
-	Conflict       bool        `json:"conflict,omitempty"`
-	BaseBlobHash   object.Hash `json:"base_blob_hash,omitempty"`
-	OursBlobHash   object.Hash `json:"ours_blob_hash,omitempty"`
-	TheirsBlobHash object.Hash `json:"theirs_blob_hash,omitempty"`
-	ModTime        int64       `json:"mod_time"`
-	Size           int64       `json:"size"`
-	HasChangeTime  bool        `json:"has_change_time,omitempty"`
-	ChangeTimeNano int64       `json:"change_time_nano,omitempty"`
-	HasFileID      bool        `json:"has_file_id,omitempty"`
-	Device         uint64      `json:"device,omitempty"`
-	Inode          uint64      `json:"inode,omitempty"`
+	Path                  string                              `json:"path"`
+	BlobHash              object.Hash                         `json:"blob_hash"`
+	EntityListHash        object.Hash                         `json:"entity_list_hash,omitempty"`
+	Mode                  string                              `json:"mode,omitempty"`
+	Conflict              bool                                `json:"conflict,omitempty"`
+	BaseBlobHash          object.Hash                         `json:"base_blob_hash,omitempty"`
+	OursBlobHash          object.Hash                         `json:"ours_blob_hash,omitempty"`
+	TheirsBlobHash        object.Hash                         `json:"theirs_blob_hash,omitempty"`
+	ModTime               int64                               `json:"mod_time"`
+	Size                  int64                               `json:"size"`
+	HasChangeTime         bool                                `json:"has_change_time,omitempty"`
+	ChangeTimeNano        int64                               `json:"change_time_nano,omitempty"`
+	HasFileID             bool                                `json:"has_file_id,omitempty"`
+	Device                uint64                              `json:"device,omitempty"`
+	Inode                 uint64                              `json:"inode,omitempty"`
+	ExtractionDiagnostics []object.EntityExtractionDiagnostic `json:"extraction_diagnostics,omitempty"`
 }
 
 // Staging holds the full staging area (index) for a Graft repository.
@@ -102,36 +103,18 @@ func (r *Repo) WriteStaging(s *Staging) error {
 }
 
 func (r *Repo) writeStaging(s *Staging, invalidateStatusCache bool) error {
+	if err := validateStagingPaths(s); err != nil {
+		return fmt.Errorf("write staging: %w", err)
+	}
+
 	data, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
 		return fmt.Errorf("write staging: marshal: %w", err)
 	}
 
-	// Atomic write via temp file + rename.
-	tmp, err := os.CreateTemp(r.GraftDir, ".index-tmp-*")
-	if err != nil {
-		return fmt.Errorf("write staging: tmpfile: %w", err)
-	}
-	tmpName := tmp.Name()
-
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		os.Remove(tmpName)
-		return fmt.Errorf("write staging: write: %w", err)
-	}
-	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		os.Remove(tmpName)
-		return fmt.Errorf("write staging: sync: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		os.Remove(tmpName)
-		return fmt.Errorf("write staging: close: %w", err)
-	}
-
-	if err := os.Rename(tmpName, r.indexPath()); err != nil {
-		os.Remove(tmpName)
-		return fmt.Errorf("write staging: rename: %w", err)
+	data = append(data, '\n')
+	if err := writeFileAtomic(r.indexPath(), data, 0o644); err != nil {
+		return fmt.Errorf("write staging: %w", err)
 	}
 
 	if invalidateStatusCache {
@@ -160,17 +143,23 @@ type AddOptions struct {
 //  3. A StagingEntry is created/updated with the resulting hashes and file
 //     metadata, and the staging area is flushed to disk.
 func (r *Repo) Add(paths []string) error {
-	return r.add(paths, nil, AddOptions{})
+	return r.withRepositoryLock("add", func() error {
+		return r.add(paths, nil, AddOptions{})
+	})
 }
 
 // AddWithProgress stages files while emitting coarse-grained progress events.
 func (r *Repo) AddWithProgress(paths []string, progress AddProgressFunc) error {
-	return r.add(paths, progress, AddOptions{})
+	return r.withRepositoryLock("add", func() error {
+		return r.add(paths, progress, AddOptions{})
+	})
 }
 
 // AddWithOptions stages files with the given options and progress callback.
 func (r *Repo) AddWithOptions(paths []string, progress AddProgressFunc, opts AddOptions) error {
-	return r.add(paths, progress, opts)
+	return r.withRepositoryLock("add", func() error {
+		return r.add(paths, progress, opts)
+	})
 }
 
 // blobResult holds the output of Phase 1 (blob staging) for a single file.
@@ -435,6 +424,8 @@ func (r *Repo) add(paths []string, progress AddProgressFunc, opts AddOptions) er
 // guarded by the source-bytes semaphore. It updates br.entry.EntityListHash
 // in place and calls the AddHook if set.
 func (r *Repo) extractAndStoreEntities(ctx context.Context, sem *sourceBytesSemaphore, br *blobResult, opts AddOptions) error {
+	br.entry.ExtractionDiagnostics = nil
+
 	// Read content from the blob store instead of retaining it in memory
 	// across phases. This prevents holding all file contents simultaneously.
 	var content []byte
@@ -458,6 +449,8 @@ func (r *Repo) extractAndStoreEntities(ctx context.Context, sem *sourceBytesSema
 		return nil
 	}
 	if int64(len(content)) > maxEntityExtractionSize {
+		addExtractionDiagnostic(br.entry, "warning", "entity_extraction_oversized",
+			fmt.Sprintf("entity extraction skipped for %s: file is %d bytes, limit is %d", br.relPath, len(content), maxEntityExtractionSize))
 		return nil
 	}
 
@@ -467,6 +460,8 @@ func (r *Repo) extractAndStoreEntities(ctx context.Context, sem *sourceBytesSema
 		return nil // unsupported file type — no entities
 	}
 	if entity.ShouldSkipExtraction(langEntry.Name, int64(len(content)), opts.ForceEntities) {
+		addExtractionDiagnostic(br.entry, "info", "entity_extraction_data_format_skipped",
+			fmt.Sprintf("entity extraction skipped for %s: %s data format is %d bytes", br.relPath, langEntry.Name, len(content)))
 		return nil
 	}
 
@@ -481,10 +476,25 @@ func (r *Repo) extractAndStoreEntities(ctx context.Context, sem *sourceBytesSema
 	})
 	if extractErr != nil {
 		if errors.Is(extractErr, entity.ErrDataFormatSkipped) {
+			addExtractionDiagnostic(br.entry, "info", "entity_extraction_data_format_skipped", extractErr.Error())
 			return nil
 		}
 		// Non-fatal: unsupported file types, parse errors, etc.
+		addExtractionDiagnostic(br.entry, "warning", "entity_extraction_failed", extractErr.Error())
 		return nil
+	}
+	if entity.HasParseErrors(br.relPath, content) {
+		diag := object.EntityExtractionDiagnostic{
+			Severity: "warning",
+			Code:     "entity_extraction_parse_errors",
+			Message:  fmt.Sprintf("tree-sitter reported syntax errors while extracting entities for %s", br.relPath),
+		}
+		br.entry.ExtractionDiagnostics = append(br.entry.ExtractionDiagnostics, diag)
+		el.Diagnostics = append(el.Diagnostics, entity.ExtractionDiagnostic{
+			Severity: diag.Severity,
+			Code:     diag.Code,
+			Message:  diag.Message,
+		})
 	}
 	if len(el.Entities) == 0 {
 		return nil
@@ -511,6 +521,17 @@ func (r *Repo) extractAndStoreEntities(ctx context.Context, sem *sourceBytesSema
 	}
 
 	return nil
+}
+
+func addExtractionDiagnostic(entry *StagingEntry, severity, code, message string) {
+	if entry == nil {
+		return
+	}
+	entry.ExtractionDiagnostics = append(entry.ExtractionDiagnostics, object.EntityExtractionDiagnostic{
+		Severity: severity,
+		Code:     code,
+		Message:  message,
+	})
 }
 
 func emitAddProgress(progress AddProgressFunc, event AddProgress) {
@@ -583,7 +604,15 @@ func addWorkerCount(total int) int {
 // EntityListHash empty) and the raw content for Phase 2 entity extraction.
 // Binary files are staged but return nil content to skip entity extraction.
 func (r *Repo) prepareBlobEntry(relPath string, opts AddOptions) (*StagingEntry, []byte, error) {
+	cleanPath, err := validateRepoPath(relPath)
+	if err != nil {
+		return nil, nil, err
+	}
+	relPath = cleanPath
 	absPath := filepath.Join(r.RootDir, filepath.FromSlash(relPath))
+	if err := rejectSymlinkPath(relPath, absPath); err != nil {
+		return nil, nil, err
+	}
 
 	// Stat first to check size before reading into memory.
 	info, err := os.Stat(absPath)
@@ -631,6 +660,12 @@ func (r *Repo) prepareBlobEntry(relPath string, opts AddOptions) (*StagingEntry,
 
 // Remove stages file deletions and optionally removes files from disk.
 func (r *Repo) Remove(paths []string, cached bool) error {
+	return r.withRepositoryLock("remove", func() error {
+		return r.remove(paths, cached)
+	})
+}
+
+func (r *Repo) remove(paths []string, cached bool) error {
 	stg, err := r.ReadStaging()
 	if err != nil {
 		return fmt.Errorf("rm: %w", err)
@@ -650,7 +685,10 @@ func (r *Repo) Remove(paths []string, cached bool) error {
 			continue
 		}
 
-		absPath := filepath.Join(r.RootDir, filepath.FromSlash(relPath))
+		absPath, err := r.safeWorktreePath(relPath)
+		if err != nil {
+			return fmt.Errorf("rm: unsafe path %q: %w", relPath, err)
+		}
 		if err := os.Remove(absPath); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("rm: remove %q: %w", relPath, err)
 		}
@@ -685,11 +723,27 @@ func (r *Repo) writeEntityList(relPath string, el *entity.EntityList) (object.Ha
 	}
 
 	elObj := &object.EntityListObj{
-		Language:   el.Language,
-		Path:       relPath,
-		EntityRefs: refs,
+		Language:    el.Language,
+		Path:        relPath,
+		EntityRefs:  refs,
+		Diagnostics: entityDiagnosticsToObject(el.Diagnostics),
 	}
 	return r.Store.WriteEntityList(elObj)
+}
+
+func entityDiagnosticsToObject(in []entity.ExtractionDiagnostic) []object.EntityExtractionDiagnostic {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]object.EntityExtractionDiagnostic, 0, len(in))
+	for _, d := range in {
+		out = append(out, object.EntityExtractionDiagnostic{
+			Severity: d.Severity,
+			Code:     d.Code,
+			Message:  d.Message,
+		})
+	}
+	return out
 }
 
 // repoRelPath converts a path (absolute, or relative to CWD) into a path
@@ -804,12 +858,20 @@ func (r *Repo) collectAddPath(input string, ic *IgnoreChecker, seen map[string]s
 	}
 
 	absPath := filepath.Join(r.RootDir, filepath.FromSlash(relPath))
+	if relPath != "" {
+		if err := rejectSymlinkPath(relPath, absPath); err != nil {
+			return err
+		}
+	}
 	info, err := os.Stat(absPath)
 	if err != nil {
 		return fmt.Errorf("stat %q: %w", relPath, err)
 	}
 	if !info.IsDir() {
-		rel := filepath.ToSlash(relPath)
+		rel, err := validateRepoPath(filepath.ToSlash(relPath))
+		if err != nil {
+			return err
+		}
 		if ic.IsIgnored(rel) {
 			return nil
 		}
@@ -837,6 +899,12 @@ func (r *Repo) collectAddPath(input string, ic *IgnoreChecker, seen map[string]s
 		}
 		if ic.IsIgnored(rel) {
 			return nil
+		}
+		if d.Type()&fs.ModeSymlink != 0 {
+			return fmt.Errorf("path %q is a symlink; graft does not stage symlink targets", rel)
+		}
+		if _, err := validateRepoPath(rel); err != nil {
+			return err
 		}
 		seen[rel] = struct{}{}
 		return nil

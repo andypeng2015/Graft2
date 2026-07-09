@@ -1,6 +1,7 @@
 package repo
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -179,6 +180,48 @@ func TestRunHook_ExternalProcessGuardCanBlock(t *testing.T) {
 	}
 }
 
+func TestRunHook_UntrustedRepoSkipsExecutableHook(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("hook tests require unix shell scripts")
+	}
+
+	r := initRepoWithFile(t, "main.go", []byte("package main\n\nfunc main() {}\n"))
+	if err := r.SetHooksTrusted(false); err != nil {
+		t.Fatalf("SetHooksTrusted(false): %v", err)
+	}
+	marker := filepath.Join(r.RootDir, "hook-ran")
+	installHook(t, r, HookPreCommit, "#!/bin/sh\ntouch "+marker+"\nexit 1\n", true)
+
+	if err := r.RunHook(HookPreCommit); err != nil {
+		t.Fatalf("RunHook returned error for untrusted hook: %v", err)
+	}
+	if _, statErr := os.Stat(marker); !os.IsNotExist(statErr) {
+		t.Fatalf("untrusted hook marker should not exist, stat error=%v", statErr)
+	}
+}
+
+func TestRunHookWithOptionsRoutesStdoutAndStderr(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("hook tests require unix shell scripts")
+	}
+
+	r := initRepoWithFile(t, "main.go", []byte("package main\n\nfunc main() {}\n"))
+	installHook(t, r, HookPreCommit, "#!/bin/sh\necho legacy-out\necho legacy-err >&2\n", true)
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if err := r.RunHookWithOptions(HookPreCommit, HookRunOptions{Stdout: &stdout, Stderr: &stderr}); err != nil {
+		t.Fatalf("RunHookWithOptions: %v", err)
+	}
+
+	if got := stdout.String(); !strings.Contains(got, "legacy-out") {
+		t.Fatalf("stdout = %q, want hook stdout", got)
+	}
+	if got := stderr.String(); !strings.Contains(got, "legacy-err") {
+		t.Fatalf("stderr = %q, want hook stderr", got)
+	}
+}
+
 // --- New hooks engine tests ---
 
 // writeScript creates an executable shell script in the given directory and
@@ -222,6 +265,37 @@ func TestRunHookEntry_StdinJSON(t *testing.T) {
 	}
 	if string(got) != string(payload) {
 		t.Errorf("stdin = %q, want %q", got, payload)
+	}
+}
+
+func TestRunHookEntryWithOptionsRoutesStdoutAndStderr(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("hook tests require unix shell scripts")
+	}
+
+	dir := t.TempDir()
+	scriptPath := writeScript(t, dir, "io.sh", "#!/bin/sh\necho entry-out\necho entry-err >&2\n")
+
+	entry := HookEntry{
+		Name:  "io",
+		Point: "pre-commit",
+		Run:   scriptPath,
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if err := RunHookEntryWithOptions(context.Background(), dir, entry, nil, HookRunOptions{
+		Stdout: &stdout,
+		Stderr: &stderr,
+	}); err != nil {
+		t.Fatalf("RunHookEntryWithOptions: %v", err)
+	}
+
+	if got := stdout.String(); !strings.Contains(got, "entry-out") {
+		t.Fatalf("stdout = %q, want hook stdout", got)
+	}
+	if got := stderr.String(); !strings.Contains(got, "entry-err") {
+		t.Fatalf("stderr = %q, want hook stderr", got)
 	}
 }
 
@@ -321,6 +395,31 @@ func TestRunHooksForPoint_PostHooksContinueOnFailure(t *testing.T) {
 
 	if _, statErr := os.Stat(marker); statErr != nil {
 		t.Error("second hook should have run despite first failing (canAbort=false)")
+	}
+}
+
+func TestRunHooksForPointWithOptionsRoutesWarnings(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("hook tests require unix shell scripts")
+	}
+
+	dir := t.TempDir()
+	failPath := writeScript(t, dir, "fail.sh", "#!/bin/sh\nexit 1\n")
+	hooks := []HookEntry{
+		{Name: "first", Point: "post-commit", Run: failPath},
+	}
+
+	var warnings bytes.Buffer
+	err := RunHooksForPointWithOptions(context.Background(), dir, hooks, nil, false, HookRunOptions{
+		WarningWriter: &warnings,
+	})
+	if err != nil {
+		t.Fatalf("RunHooksForPointWithOptions should not return error for post hooks, got: %v", err)
+	}
+
+	got := warnings.String()
+	if !strings.Contains(got, "warning: hook post-commit.first failed") {
+		t.Fatalf("warnings = %q, want post-hook warning", got)
 	}
 }
 

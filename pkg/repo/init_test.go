@@ -1,9 +1,11 @@
 package repo
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/odvcencio/graft/pkg/object"
@@ -42,6 +44,57 @@ func TestInit_CreatesStructure(t *testing.T) {
 	// Store is non-nil
 	if r.Store == nil {
 		t.Error("Store is nil after Init")
+	}
+
+	cfg, err := r.ReadRepositoryConfig()
+	if err != nil {
+		t.Fatalf("ReadRepositoryConfig: %v", err)
+	}
+	if cfg.RepositoryFormatVersion != RepositoryFormatVersion {
+		t.Fatalf("repository_format_version = %d, want %d", cfg.RepositoryFormatVersion, RepositoryFormatVersion)
+	}
+	if cfg.ObjectHash != DefaultRepositoryObjectHash {
+		t.Fatalf("object_hash = %q, want %q", cfg.ObjectHash, DefaultRepositoryObjectHash)
+	}
+	if cfg.CreatedBy == "" || cfg.CreatedAt == "" {
+		t.Fatalf("created_by/created_at should be populated: %+v", cfg)
+	}
+}
+
+func TestMigrateRepositoryConfigCreatesMissingConfig(t *testing.T) {
+	dir := t.TempDir()
+	r, err := Init(dir)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := os.Remove(filepath.Join(r.GraftDir, "config")); err != nil {
+		t.Fatalf("remove config: %v", err)
+	}
+	report := r.VerifyIntegrity()
+	if !hasRepositoryDiagnostic(report, "repository_config_missing") {
+		t.Fatalf("missing repository_config_missing diagnostic: %+v", report.Diagnostics)
+	}
+
+	result, err := r.MigrateRepositoryConfig()
+	if err != nil {
+		t.Fatalf("MigrateRepositoryConfig: %v", err)
+	}
+	if !result.Migrated {
+		t.Fatal("Migrated = false, want true")
+	}
+	if result.FromVersion != 0 || result.ToVersion != RepositoryFormatVersion {
+		t.Fatalf("migration versions = %d -> %d, want 0 -> %d", result.FromVersion, result.ToVersion, RepositoryFormatVersion)
+	}
+	cfg, err := r.ReadRepositoryConfig()
+	if err != nil {
+		t.Fatalf("ReadRepositoryConfig: %v", err)
+	}
+	if cfg.RepositoryFormatVersion != RepositoryFormatVersion {
+		t.Fatalf("repository_format_version = %d, want %d", cfg.RepositoryFormatVersion, RepositoryFormatVersion)
+	}
+	report = r.VerifyIntegrity()
+	if hasRepositoryDiagnostic(report, "repository_config_missing") {
+		t.Fatalf("repository_config_missing still present: %+v", report.Diagnostics)
 	}
 }
 
@@ -97,6 +150,92 @@ func TestOpen_NoRepo_Error(t *testing.T) {
 	_, err := Open(dir)
 	if err == nil {
 		t.Fatal("Open should fail in non-repo directory, got nil error")
+	}
+}
+
+func TestOpen_RejectsUnsupportedRepositoryFormat(t *testing.T) {
+	dir := t.TempDir()
+	r, err := Init(dir)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	cfg, err := r.ReadRepositoryConfig()
+	if err != nil {
+		t.Fatalf("ReadRepositoryConfig: %v", err)
+	}
+	cfg.RepositoryFormatVersion = RepositoryFormatVersion + 1
+	if err := r.WriteRepositoryConfig(cfg); err != nil {
+		t.Fatalf("WriteRepositoryConfig: %v", err)
+	}
+
+	if _, err := Open(dir); err == nil {
+		t.Fatal("Open should reject unsupported newer repository format")
+	}
+}
+
+func TestOpen_RejectsUnsupportedObjectHash(t *testing.T) {
+	dir := t.TempDir()
+	r, err := Init(dir)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	cfg, err := r.ReadRepositoryConfig()
+	if err != nil {
+		t.Fatalf("ReadRepositoryConfig: %v", err)
+	}
+	cfg.ObjectHash = "sha512"
+	if err := r.WriteRepositoryConfig(cfg); err != nil {
+		t.Fatalf("WriteRepositoryConfig: %v", err)
+	}
+
+	if _, err := Open(dir); err == nil {
+		t.Fatal("Open should reject unsupported object hash")
+	} else if !strings.Contains(err.Error(), `unsupported graft object hash "sha512"`) {
+		t.Fatalf("Open error = %v, want unsupported object hash", err)
+	}
+}
+
+func TestReadRepositoryConfig_LegacyMissingConfig(t *testing.T) {
+	dir := t.TempDir()
+	r, err := Init(dir)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := os.Remove(filepath.Join(r.GraftDir, repositoryConfigFileName)); err != nil {
+		t.Fatalf("remove config: %v", err)
+	}
+
+	cfg, err := r.ReadRepositoryConfig()
+	if err != nil {
+		t.Fatalf("ReadRepositoryConfig: %v", err)
+	}
+	if cfg.RepositoryFormatVersion != 0 {
+		t.Fatalf("legacy repository_format_version = %d, want 0", cfg.RepositoryFormatVersion)
+	}
+	if _, err := Open(dir); err != nil {
+		t.Fatalf("Open should allow missing legacy repository config: %v", err)
+	}
+}
+
+func TestRepositoryConfig_OnDiskJSON(t *testing.T) {
+	dir := t.TempDir()
+	r, err := Init(dir)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(r.GraftDir, repositoryConfigFileName))
+	if err != nil {
+		t.Fatalf("ReadFile(config): %v", err)
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf(".graft/config is not JSON: %v\n%s", err, data)
+	}
+	if raw["repository_format_version"] == nil {
+		t.Fatalf(".graft/config missing repository_format_version: %s", data)
 	}
 }
 

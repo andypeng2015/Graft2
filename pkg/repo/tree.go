@@ -30,6 +30,10 @@ type TreeFileEntry struct {
 // BuildTree groups them by directory, recursively creates subtrees, and
 // returns the root tree hash.
 func (r *Repo) BuildTree(s *Staging) (object.Hash, error) {
+	if err := validateStagingPaths(s); err != nil {
+		return "", fmt.Errorf("validate staging paths: %w", err)
+	}
+
 	rootHash, err := r.buildTreeDir(s, "")
 	if err != nil {
 		return "", err
@@ -299,15 +303,13 @@ func (r *Repo) flattenTreeInto(h object.Hash, prefix string, out *[]TreeFileEntr
 			continue // gitlinks are not files to checkout
 		}
 
-		fullPath := entry.Name
-		if prefix != "" {
-			if useFastJoin && isSimplePathElem(entry.Name) {
-				if !dropPrefix {
-					fullPath = prefixWithSlash + entry.Name
-				}
-			} else {
-				fullPath = path.Join(prefix, entry.Name)
-			}
+		fullPath, err := safeTreePath(prefix, entry.Name)
+		if err != nil {
+			return fmt.Errorf("flatten tree: unsafe path entry %q under %q: %w", entry.Name, prefix, err)
+		}
+
+		if prefix != "" && useFastJoin && isSimplePathElem(entry.Name) && !dropPrefix {
+			fullPath = prefixWithSlash + entry.Name
 		}
 
 		if entry.IsDir {
@@ -405,23 +407,24 @@ func (r *Repo) flattenTreeWithModulesInto(h object.Hash, prefix string, files *[
 	}
 
 	for _, entry := range treeObj.Entries {
-		fullPath := entry.Name
-		if prefix != "" {
-			if useFastJoin && isSimplePathElem(entry.Name) {
-				if !dropPrefix {
-					fullPath = prefixWithSlash + entry.Name
-				}
-			} else {
-				fullPath = path.Join(prefix, entry.Name)
-			}
-		}
-
 		if entry.Mode == object.TreeModeModule {
+			fullPath, err := safeModuleTreePath(prefix, entry.Name)
+			if err != nil {
+				return fmt.Errorf("flatten tree: unsafe module path entry %q under %q: %w", entry.Name, prefix, err)
+			}
 			*modules = append(*modules, TreeModuleEntry{
 				Path:     fullPath,
 				BlobHash: entry.BlobHash,
 			})
 			continue
+		}
+
+		fullPath, err := safeTreePath(prefix, entry.Name)
+		if err != nil {
+			return fmt.Errorf("flatten tree: unsafe path entry %q under %q: %w", entry.Name, prefix, err)
+		}
+		if prefix != "" && useFastJoin && isSimplePathElem(entry.Name) && !dropPrefix {
+			fullPath = prefixWithSlash + entry.Name
 		}
 
 		if entry.IsDir {

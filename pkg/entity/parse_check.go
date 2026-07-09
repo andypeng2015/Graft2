@@ -16,7 +16,7 @@ func HasParseErrors(filename string, source []byte) bool {
 	if grammars.DetectLanguage(filename) == nil {
 		return false
 	}
-	bt, err := grammars.ParseFilePooled(filename, source)
+	bt, err := parseFilePooled(filename, source)
 	if err != nil {
 		return true
 	}

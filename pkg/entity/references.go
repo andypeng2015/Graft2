@@ -2,7 +2,6 @@ package entity
 
 import (
 	gotreesitter "github.com/odvcencio/gotreesitter"
-	"github.com/odvcencio/gotreesitter/grammars"
 )
 
 // Reference is a name-based call/use edge: the declaration FromEntity refers to
@@ -46,7 +45,7 @@ func ExtractReferences(filename string, source []byte) ([]Reference, error) {
 		return nil, err
 	}
 
-	bt, err := grammars.ParseFilePooled(filename, source)
+	bt, err := parseFilePooled(filename, source)
 	if err != nil {
 		return nil, err
 	}

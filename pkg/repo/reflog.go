@@ -70,17 +70,8 @@ func (r *Repo) appendReflog(ref string, oldHash, newHash object.Hash, reason str
 	}
 	line := fmt.Sprintf("%s %s %d %s\n", old, newVal, time.Now().Unix(), reason)
 
-	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-	if err != nil {
-		return fmt.Errorf("reflog open: %w", err)
-	}
-
-	if _, err := f.WriteString(line); err != nil {
-		_ = f.Close()
+	if err := appendFileAtomic(logPath, []byte(line), 0o644); err != nil {
 		return fmt.Errorf("reflog write: %w", err)
-	}
-	if err := f.Close(); err != nil {
-		return fmt.Errorf("reflog close: %w", err)
 	}
 	return nil
 }
@@ -128,17 +119,8 @@ func (r *Repo) appendReflogWithEntities(ref string, oldHash, newHash object.Hash
 	}
 	line += "\n"
 
-	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-	if err != nil {
-		return fmt.Errorf("reflog open: %w", err)
-	}
-
-	if _, err := f.WriteString(line); err != nil {
-		_ = f.Close()
+	if err := appendFileAtomic(logPath, []byte(line), 0o644); err != nil {
 		return fmt.Errorf("reflog write: %w", err)
-	}
-	if err := f.Close(); err != nil {
-		return fmt.Errorf("reflog close: %w", err)
 	}
 	return nil
 }
@@ -436,6 +418,16 @@ func (r *Repo) ReadReflog(ref string, limit int) ([]ReflogEntry, error) {
 		return nil, err
 	}
 
+	return r.readReflog(refName, limit)
+}
+
+// ReadHEADReflog reads the worktree-local HEAD reflog exactly. Unlike
+// ReadReflog("HEAD"), this does not resolve HEAD to the current branch reflog.
+func (r *Repo) ReadHEADReflog(limit int) ([]ReflogEntry, error) {
+	return r.readReflog("HEAD", limit)
+}
+
+func (r *Repo) readReflog(refName string, limit int) ([]ReflogEntry, error) {
 	baseDir := r.refsBaseDir()
 	if refName == "HEAD" {
 		baseDir = r.GraftDir

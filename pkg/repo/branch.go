@@ -19,6 +19,12 @@ var ErrBranchAlreadyExists = errors.New("branch already exists")
 // It writes the hash to .graft/refs/heads/<name>. Returns an error if the
 // branch already exists or if the name uses the reserved coord/ namespace.
 func (r *Repo) CreateBranch(name string, target object.Hash) error {
+	return r.withRepositoryLock("branch-create", func() error {
+		return r.createBranch(name, target)
+	})
+}
+
+func (r *Repo) createBranch(name string, target object.Hash) error {
 	if strings.HasPrefix(name, "coord/") {
 		return fmt.Errorf("refs/coord/ namespace is reserved for coordination")
 	}
@@ -36,6 +42,12 @@ func (r *Repo) CreateBranch(name string, target object.Hash) error {
 // DeleteBranch removes the branch ref file .graft/refs/heads/<name>.
 // Returns an error if the branch is the current branch or does not exist.
 func (r *Repo) DeleteBranch(name string) error {
+	return r.withRepositoryLock("branch-delete", func() error {
+		return r.deleteBranch(name)
+	})
+}
+
+func (r *Repo) deleteBranch(name string) error {
 	// Check if this is the current branch.
 	current, err := r.CurrentBranch()
 	if err != nil {

@@ -16,7 +16,7 @@ func TestCoordinatorCollectCoordPushRoots(t *testing.T) {
 //line /home/draco/work/graft/pkg/coord/coord_push_roots.dmj:12
 	t.Parallel()
 	//line /home/draco/work/graft/pkg/coord/coord_push_roots.dmj:13
-t.Run("a feed with three appended events", func(t *testing.T) {
+	t.Run("a feed with three appended events", func(t *testing.T) {
 		c := newTestCoordinator(t)
 		appendErr1 := c.AppendFeed(FeedEvent{Event: "e1", AgentID: "a"})
 		appendErr2 := c.AppendFeed(FeedEvent{Event: "e2", AgentID: "a"})
@@ -24,7 +24,7 @@ t.Run("a feed with three appended events", func(t *testing.T) {
 		coordRefs, listErr := c.Repo.ListRefs("coord")
 
 		//line /home/draco/work/graft/pkg/coord/coord_push_roots.dmj:20
-t.Run("collecting push roots", func(t *testing.T) {
+		t.Run("collecting push roots", func(t *testing.T) {
 			roots := c.collectCoordPushRoots(coordRefs)
 			walked, _ := c.WalkFeed("", 100)
 
@@ -40,21 +40,20 @@ t.Run("collecting push roots", func(t *testing.T) {
 			}
 
 			//line /home/draco/work/graft/pkg/coord/coord_push_roots.dmj:35
-t.Run("every feed-chain entry blob is included as a push root", func(t *testing.T) {
+			t.Run("every feed-chain entry blob is included as a push root", func(t *testing.T) {
 				//line /home/draco/work/graft/pkg/coord/coord_push_roots.dmj:36
-assert.Nil(t, appendErr1, "danmuji:36: given a feed with three appended events > when collecting push roots > then every feed-chain entry blob is included as a push root | expect (expect appendErr1 == nil)")
+				assert.Nil(t, appendErr1, "danmuji:36: given a feed with three appended events > when collecting push roots > then every feed-chain entry blob is included as a push root | expect (expect appendErr1 == nil)")
 				//line /home/draco/work/graft/pkg/coord/coord_push_roots.dmj:37
-assert.Nil(t, appendErr2, "danmuji:37: given a feed with three appended events > when collecting push roots > then every feed-chain entry blob is included as a push root | expect (expect appendErr2 == nil)")
+				assert.Nil(t, appendErr2, "danmuji:37: given a feed with three appended events > when collecting push roots > then every feed-chain entry blob is included as a push root | expect (expect appendErr2 == nil)")
 				//line /home/draco/work/graft/pkg/coord/coord_push_roots.dmj:38
-assert.Nil(t, appendErr3, "danmuji:38: given a feed with three appended events > when collecting push roots > then every feed-chain entry blob is included as a push root | expect (expect appendErr3 == nil)")
+				assert.Nil(t, appendErr3, "danmuji:38: given a feed with three appended events > when collecting push roots > then every feed-chain entry blob is included as a push root | expect (expect appendErr3 == nil)")
 				//line /home/draco/work/graft/pkg/coord/coord_push_roots.dmj:39
-assert.Nil(t, listErr, "danmuji:39: given a feed with three appended events > when collecting push roots > then every feed-chain entry blob is included as a push root | expect (expect listErr == nil)")
+				assert.Nil(t, listErr, "danmuji:39: given a feed with three appended events > when collecting push roots > then every feed-chain entry blob is included as a push root | expect (expect listErr == nil)")
 				//line /home/draco/work/graft/pkg/coord/coord_push_roots.dmj:40
-assert.EqualValues(t, 3, len(walked), "danmuji:40: given a feed with three appended events > when collecting push roots > then every feed-chain entry blob is included as a push root | expect (expect len(walked) == 3)")
+				assert.EqualValues(t, 3, len(walked), "danmuji:40: given a feed with three appended events > when collecting push roots > then every feed-chain entry blob is included as a push root | expect (expect len(walked) == 3)")
 				//line /home/draco/work/graft/pkg/coord/coord_push_roots.dmj:41
-assert.Equal(t, true, allChainBlobsPresent, "danmuji:41: given a feed with three appended events > when collecting push roots > then every feed-chain entry blob is included as a push root | expect (expect allChainBlobsPresent == true)")
+				assert.Equal(t, true, allChainBlobsPresent, "danmuji:41: given a feed with three appended events > when collecting push roots > then every feed-chain entry blob is included as a push root | expect (expect allChainBlobsPresent == true)")
 			})
 		})
 	})
 }
-

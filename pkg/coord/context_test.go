@@ -87,7 +87,7 @@ func TestAssembleEntityContext_FitsWithinBudget(t *testing.T) {
 // signature-only, and the result is marked truncated.
 func TestAssembleEntityContext_DegradesToSignatureUnderTightBudget(t *testing.T) {
 	target := ContextSection{Name: "Target", Signature: "func Target()", Body: strings.Repeat("x", 400)} // ~100 tokens
-	bigDep := ContextSection{Name: "Dep", Signature: "func Dep()", Body: strings.Repeat("y", 4000)}       // ~1000 tokens
+	bigDep := ContextSection{Name: "Dep", Signature: "func Dep()", Body: strings.Repeat("y", 4000)}      // ~1000 tokens
 
 	res := AssembleEntityContext(target, []ContextSection{bigDep}, nil, 120)
 

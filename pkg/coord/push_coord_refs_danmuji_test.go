@@ -16,7 +16,7 @@ func TestCoordinatorPushCoordRefs(t *testing.T) {
 //line /home/draco/work/graft/pkg/coord/push_coord_refs.dmj:13
 	t.Parallel()
 	//line /home/draco/work/graft/pkg/coord/push_coord_refs.dmj:14
-t.Run("a three-event feed and then a configured remote", func(t *testing.T) {
+	t.Run("a three-event feed and then a configured remote", func(t *testing.T) {
 		f, ts := newFakeOrchard(t)
 		defer ts.Close()
 		c := newTestCoordinator(t)
@@ -26,7 +26,7 @@ t.Run("a three-event feed and then a configured remote", func(t *testing.T) {
 		setRemoteErr := c.Repo.SetRemote("origin", f.baseURL(ts))
 
 		//line /home/draco/work/graft/pkg/coord/push_coord_refs.dmj:23
-t.Run("pushing coord refs to the remote", func(t *testing.T) {
+		t.Run("pushing coord refs to the remote", func(t *testing.T) {
 			pushErr := c.PushCoordRefs()
 
 			walked, _ := c.WalkFeed("", 100)
@@ -39,19 +39,18 @@ t.Run("pushing coord refs to the remote", func(t *testing.T) {
 			headSetRemotely := f.refHash("coord/feed/head") != object.Hash("")
 
 			//line /home/draco/work/graft/pkg/coord/push_coord_refs.dmj:35
-t.Run("the full feed chain transferred and the head ref is set remotely", func(t *testing.T) {
+			t.Run("the full feed chain transferred and the head ref is set remotely", func(t *testing.T) {
 				//line /home/draco/work/graft/pkg/coord/push_coord_refs.dmj:36
-assert.Nil(t, setRemoteErr, "danmuji:36: given a three-event feed and then a configured remote > when pushing coord refs to the remote > then the full feed chain transferred and the head ref is set remotely | expect (expect setRemoteErr == nil)")
+				assert.Nil(t, setRemoteErr, "danmuji:36: given a three-event feed and then a configured remote > when pushing coord refs to the remote > then the full feed chain transferred and the head ref is set remotely | expect (expect setRemoteErr == nil)")
 				//line /home/draco/work/graft/pkg/coord/push_coord_refs.dmj:37
-assert.Nil(t, pushErr, "danmuji:37: given a three-event feed and then a configured remote > when pushing coord refs to the remote > then the full feed chain transferred and the head ref is set remotely | expect (expect pushErr == nil)")
+				assert.Nil(t, pushErr, "danmuji:37: given a three-event feed and then a configured remote > when pushing coord refs to the remote > then the full feed chain transferred and the head ref is set remotely | expect (expect pushErr == nil)")
 				//line /home/draco/work/graft/pkg/coord/push_coord_refs.dmj:38
-assert.EqualValues(t, 3, len(walked), "danmuji:38: given a three-event feed and then a configured remote > when pushing coord refs to the remote > then the full feed chain transferred and the head ref is set remotely | expect (expect len(walked) == 3)")
+				assert.EqualValues(t, 3, len(walked), "danmuji:38: given a three-event feed and then a configured remote > when pushing coord refs to the remote > then the full feed chain transferred and the head ref is set remotely | expect (expect len(walked) == 3)")
 				//line /home/draco/work/graft/pkg/coord/push_coord_refs.dmj:39
-assert.Equal(t, true, allChainOnRemote, "danmuji:39: given a three-event feed and then a configured remote > when pushing coord refs to the remote > then the full feed chain transferred and the head ref is set remotely | expect (expect allChainOnRemote == true)")
+				assert.Equal(t, true, allChainOnRemote, "danmuji:39: given a three-event feed and then a configured remote > when pushing coord refs to the remote > then the full feed chain transferred and the head ref is set remotely | expect (expect allChainOnRemote == true)")
 				//line /home/draco/work/graft/pkg/coord/push_coord_refs.dmj:40
-assert.Equal(t, true, headSetRemotely, "danmuji:40: given a three-event feed and then a configured remote > when pushing coord refs to the remote > then the full feed chain transferred and the head ref is set remotely | expect (expect headSetRemotely == true)")
+				assert.Equal(t, true, headSetRemotely, "danmuji:40: given a three-event feed and then a configured remote > when pushing coord refs to the remote > then the full feed chain transferred and the head ref is set remotely | expect (expect headSetRemotely == true)")
 			})
 		})
 	})
 }
-

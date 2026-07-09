@@ -208,20 +208,24 @@ func newRepairResyncGitCmd() *cobra.Command {
 				msg := fmt.Sprintf("graft resync: match graft HEAD %s", short)
 
 				r.GitShadowSyncSnapshot(msg, author)
-				if r.HasShadowFailures() {
-					status, _ := r.GitShadowStatus()
-					if jsonFlag {
-						return writeJSON(cmd.OutOrStdout(), repairGitShadowStatusToJSON(status))
-					}
-					return fmt.Errorf("git resync failed; run graft repair check-git-shadow")
-				}
 				r.RecordGitShadowCommit(head, "resync-git")
+
+				// A repair attempt may log intermediate shadow failures before
+				// successfully writing the fresh mapping. Clear the attempt log
+				// and verify the resulting state from git + gitmap.
+				r.ClearShadowFailures()
 				status, err := r.GitShadowStatus()
 				if err != nil {
 					if jsonFlag {
 						return writeJSON(cmd.OutOrStdout(), repairGitShadowStatusToJSON(status))
 					}
 					return err
+				}
+				if status.State != repo.GitShadowStateClean {
+					if jsonFlag {
+						return writeJSON(cmd.OutOrStdout(), repairGitShadowStatusToJSON(status))
+					}
+					return fmt.Errorf("git resync failed; run graft repair check-git-shadow")
 				}
 
 				out := cmd.OutOrStdout()

@@ -18,12 +18,12 @@ func TestCoordinatorMutateTask(t *testing.T) {
 //line /home/draco/work/graft/pkg/coord/task_note_concurrency.dmj:14
 	t.Parallel()
 	//line /home/draco/work/graft/pkg/coord/task_note_concurrency.dmj:15
-t.Run("a task with no tags", func(t *testing.T) {
+	t.Run("a task with no tags", func(t *testing.T) {
 		c := newTestCoordinator(t)
 		createErr := c.CreateTask(&Task{ID: "t1", Title: "concurrency", Status: "pending"})
 
 		//line /home/draco/work/graft/pkg/coord/task_note_concurrency.dmj:19
-t.Run("eight agents each append a distinct tag, released together", func(t *testing.T) {
+		t.Run("eight agents each append a distinct tag, released together", func(t *testing.T) {
 			release := make(chan struct{})
 			var wg sync.WaitGroup
 			wg.Add(8)
@@ -43,29 +43,28 @@ t.Run("eight agents each append a distinct tag, released together", func(t *test
 			got, getErr := c.GetTask("t1")
 
 			//line /home/draco/work/graft/pkg/coord/task_note_concurrency.dmj:38
-t.Run("no append was lost: all eight tags survive", func(t *testing.T) {
+			t.Run("no append was lost: all eight tags survive", func(t *testing.T) {
 				//line /home/draco/work/graft/pkg/coord/task_note_concurrency.dmj:39
-assert.Nil(t, createErr, "danmuji:39: given a task with no tags > when eight agents each append a distinct tag, released together > then no append was lost: all eight tags survive | expect (expect createErr == nil)")
+				assert.Nil(t, createErr, "danmuji:39: given a task with no tags > when eight agents each append a distinct tag, released together > then no append was lost: all eight tags survive | expect (expect createErr == nil)")
 				//line /home/draco/work/graft/pkg/coord/task_note_concurrency.dmj:40
-assert.Nil(t, getErr, "danmuji:40: given a task with no tags > when eight agents each append a distinct tag, released together > then no append was lost: all eight tags survive | expect (expect getErr == nil)")
+				assert.Nil(t, getErr, "danmuji:40: given a task with no tags > when eight agents each append a distinct tag, released together > then no append was lost: all eight tags survive | expect (expect getErr == nil)")
 				//line /home/draco/work/graft/pkg/coord/task_note_concurrency.dmj:41
-assert.EqualValues(t, 8, len(got.Tags), "danmuji:41: given a task with no tags > when eight agents each append a distinct tag, released together > then no append was lost: all eight tags survive | expect (expect len(got.Tags) == 8)")
+				assert.EqualValues(t, 8, len(got.Tags), "danmuji:41: given a task with no tags > when eight agents each append a distinct tag, released together > then no append was lost: all eight tags survive | expect (expect len(got.Tags) == 8)")
 			})
 		})
 	})
 }
 
-
 func TestCoordinatorMutateNote(t *testing.T) {
 //line /home/draco/work/graft/pkg/coord/task_note_concurrency.dmj:47
 	t.Parallel()
 	//line /home/draco/work/graft/pkg/coord/task_note_concurrency.dmj:48
-t.Run("a note with no tags", func(t *testing.T) {
+	t.Run("a note with no tags", func(t *testing.T) {
 		c := newTestCoordinator(t)
 		createErr := c.CreateNote(&Note{ID: "n1", Title: "concurrency", Kind: "scratch", Status: "active"})
 
 		//line /home/draco/work/graft/pkg/coord/task_note_concurrency.dmj:52
-t.Run("eight agents each append a distinct tag, released together", func(t *testing.T) {
+		t.Run("eight agents each append a distinct tag, released together", func(t *testing.T) {
 			release := make(chan struct{})
 			var wg sync.WaitGroup
 			wg.Add(8)
@@ -85,15 +84,14 @@ t.Run("eight agents each append a distinct tag, released together", func(t *test
 			got, getErr := c.GetNote("n1")
 
 			//line /home/draco/work/graft/pkg/coord/task_note_concurrency.dmj:71
-t.Run("no append was lost: all eight tags survive", func(t *testing.T) {
+			t.Run("no append was lost: all eight tags survive", func(t *testing.T) {
 				//line /home/draco/work/graft/pkg/coord/task_note_concurrency.dmj:72
-assert.Nil(t, createErr, "danmuji:72: given a note with no tags > when eight agents each append a distinct tag, released together > then no append was lost: all eight tags survive | expect (expect createErr == nil)")
+				assert.Nil(t, createErr, "danmuji:72: given a note with no tags > when eight agents each append a distinct tag, released together > then no append was lost: all eight tags survive | expect (expect createErr == nil)")
 				//line /home/draco/work/graft/pkg/coord/task_note_concurrency.dmj:73
-assert.Nil(t, getErr, "danmuji:73: given a note with no tags > when eight agents each append a distinct tag, released together > then no append was lost: all eight tags survive | expect (expect getErr == nil)")
+				assert.Nil(t, getErr, "danmuji:73: given a note with no tags > when eight agents each append a distinct tag, released together > then no append was lost: all eight tags survive | expect (expect getErr == nil)")
 				//line /home/draco/work/graft/pkg/coord/task_note_concurrency.dmj:74
-assert.EqualValues(t, 8, len(got.Tags), "danmuji:74: given a note with no tags > when eight agents each append a distinct tag, released together > then no append was lost: all eight tags survive | expect (expect len(got.Tags) == 8)")
+				assert.EqualValues(t, 8, len(got.Tags), "danmuji:74: given a note with no tags > when eight agents each append a distinct tag, released together > then no append was lost: all eight tags survive | expect (expect len(got.Tags) == 8)")
 			})
 		})
 	})
 }
-

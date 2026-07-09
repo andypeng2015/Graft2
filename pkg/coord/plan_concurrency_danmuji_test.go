@@ -19,7 +19,7 @@ func TestCoordinatorMutatePlan(t *testing.T) {
 //line /home/draco/work/graft/pkg/coord/plan_concurrency.dmj:15
 	t.Parallel()
 	//line /home/draco/work/graft/pkg/coord/plan_concurrency.dmj:16
-t.Run("a plan with eight pending steps", func(t *testing.T) {
+	t.Run("a plan with eight pending steps", func(t *testing.T) {
 		c := newTestCoordinator(t)
 		steps := make([]PlanStep, 8)
 		for i := range steps {
@@ -28,7 +28,7 @@ t.Run("a plan with eight pending steps", func(t *testing.T) {
 		createErr := c.CreatePlan(&Plan{ID: "p1", Title: "concurrency", Status: "active", Steps: steps})
 
 		//line /home/draco/work/graft/pkg/coord/plan_concurrency.dmj:24
-t.Run("eight agents each complete one step, released together", func(t *testing.T) {
+		t.Run("eight agents each complete one step, released together", func(t *testing.T) {
 			release := make(chan struct{})
 			var wg sync.WaitGroup
 			wg.Add(8)
@@ -54,15 +54,14 @@ t.Run("eight agents each complete one step, released together", func(t *testing.
 			}
 
 			//line /home/draco/work/graft/pkg/coord/plan_concurrency.dmj:49
-t.Run("no update was lost: all eight steps are completed", func(t *testing.T) {
+			t.Run("no update was lost: all eight steps are completed", func(t *testing.T) {
 				//line /home/draco/work/graft/pkg/coord/plan_concurrency.dmj:50
-assert.Nil(t, createErr, "danmuji:50: given a plan with eight pending steps > when eight agents each complete one step, released together > then no update was lost: all eight steps are completed | expect (expect createErr == nil)")
+				assert.Nil(t, createErr, "danmuji:50: given a plan with eight pending steps > when eight agents each complete one step, released together > then no update was lost: all eight steps are completed | expect (expect createErr == nil)")
 				//line /home/draco/work/graft/pkg/coord/plan_concurrency.dmj:51
-assert.Nil(t, getErr, "danmuji:51: given a plan with eight pending steps > when eight agents each complete one step, released together > then no update was lost: all eight steps are completed | expect (expect getErr == nil)")
+				assert.Nil(t, getErr, "danmuji:51: given a plan with eight pending steps > when eight agents each complete one step, released together > then no update was lost: all eight steps are completed | expect (expect getErr == nil)")
 				//line /home/draco/work/graft/pkg/coord/plan_concurrency.dmj:52
-assert.EqualValues(t, 8, completed, "danmuji:52: given a plan with eight pending steps > when eight agents each complete one step, released together > then no update was lost: all eight steps are completed | expect (expect completed == 8)")
+				assert.EqualValues(t, 8, completed, "danmuji:52: given a plan with eight pending steps > when eight agents each complete one step, released together > then no update was lost: all eight steps are completed | expect (expect completed == 8)")
 			})
 		})
 	})
 }
-

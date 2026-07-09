@@ -58,7 +58,7 @@ func (r *Repo) isRebaseInProgress() bool {
 //  1. Resolve upstream to a commit hash
 //  2. Resolve HEAD to a commit hash
 //  3. Find merge base between HEAD and upstream
-//  4. If HEAD equals upstream or merge base equals HEAD: no-op (already up to date)
+//  4. If HEAD equals upstream or merge base equals upstream: no-op (already up to date)
 //  5. Collect commits from merge-base..HEAD (oldest first)
 //  6. Save sequencer state
 //  7. Detach HEAD to upstream
@@ -108,7 +108,7 @@ func (r *Repo) rebaseWithOptions(upstream string, opts RebaseOptions) error {
 	}
 
 	// 4. Already up to date?
-	if headHash == upstreamHash || mergeBase == headHash {
+	if headHash == upstreamHash || mergeBase == upstreamHash {
 		// Pop the autostash if we saved one, even though we're a no-op.
 		r.autostashPop(opts.WarningWriter)
 		return nil // no-op

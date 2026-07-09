@@ -129,7 +129,7 @@ func (r *Repo) RebaseInteractiveWithOptions(upstream string, opts InteractiveReb
 	}
 
 	// 4. Already up to date?
-	if headHash == upstreamHash || mergeBase == headHash {
+	if headHash == upstreamHash || mergeBase == upstreamHash {
 		return nil // no-op
 	}
 
@@ -223,7 +223,7 @@ func (r *Repo) RebaseInteractiveWithAutosquashOptions(upstream string, opts Inte
 	}
 
 	// 4. Already up to date?
-	if headHash == upstreamHash || mergeBase == headHash {
+	if headHash == upstreamHash || mergeBase == upstreamHash {
 		return nil // no-op
 	}
 

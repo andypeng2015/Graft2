@@ -173,12 +173,12 @@ func mcpToolCIEntities(args map[string]any) (any, error) {
 		})
 	}
 
-	return map[string]any{
+	return mcpVersionedMap(map[string]any{
 		"file":     file,
 		"language": el.Language,
 		"count":    len(entities),
 		"entities": entities,
-	}, nil
+	}), nil
 }
 
 type ciSymbolMatch struct {
@@ -283,11 +283,11 @@ func mcpToolCISymbols(args map[string]any) (any, error) {
 		return nil, fmt.Errorf("walk repo: %w", err)
 	}
 
-	return map[string]any{
+	return mcpVersionedMap(map[string]any{
 		"pattern": pattern,
 		"count":   len(matches),
 		"matches": matches,
-	}, nil
+	}), nil
 }
 
 func matchesKindFilter(e entity.Entity, filter string) bool {
@@ -356,27 +356,27 @@ func mcpToolCIReferences(args map[string]any) (any, error) {
 			}
 		}
 		if len(partialMatches) == 0 {
-			return map[string]any{
+			return mcpVersionedMap(map[string]any{
 				"name":       name,
 				"count":      0,
 				"references": []coord.XrefCallSite{},
-			}, nil
+			}), nil
 		}
 		sort.Strings(partialMatches)
 		// Return partial matches as suggestions.
-		return map[string]any{
+		return mcpVersionedMap(map[string]any{
 			"name":        name,
 			"count":       0,
 			"references":  []coord.XrefCallSite{},
 			"suggestions": partialMatches,
-		}, nil
+		}), nil
 	}
 
-	return map[string]any{
+	return mcpVersionedMap(map[string]any{
 		"name":       name,
 		"count":      len(sites),
 		"references": sites,
-	}, nil
+	}), nil
 }
 
 func mcpToolCIExports(args map[string]any) (any, error) {
@@ -411,30 +411,30 @@ func mcpToolCIExports(args map[string]any) (any, error) {
 			}
 		}
 		if len(candidates) == 0 {
-			return map[string]any{
+			return mcpVersionedMap(map[string]any{
 				"package": pkg,
 				"count":   0,
 				"exports": map[string]coord.ExportedEntity{},
-			}, nil
+			}), nil
 		}
 		if len(candidates) == 1 {
 			exports = idx.Packages[candidates[0]]
 			pkg = candidates[0]
 		} else {
-			return map[string]any{
+			return mcpVersionedMap(map[string]any{
 				"package":    pkg,
 				"count":      0,
 				"exports":    map[string]coord.ExportedEntity{},
 				"candidates": candidates,
-			}, nil
+			}), nil
 		}
 	}
 
-	return map[string]any{
+	return mcpVersionedMap(map[string]any{
 		"package": pkg,
 		"count":   len(exports),
 		"exports": exports,
-	}, nil
+	}), nil
 }
 
 type ciCaller struct {
@@ -461,11 +461,11 @@ func mcpToolCICallers(args map[string]any) (any, error) {
 
 	sites, ok := idx.Refs[name]
 	if !ok {
-		return map[string]any{
+		return mcpVersionedMap(map[string]any{
 			"name":    name,
 			"count":   0,
 			"callers": []ciCaller{},
-		}, nil
+		}), nil
 	}
 
 	// Group by calling entity.
@@ -488,9 +488,9 @@ func mcpToolCICallers(args map[string]any) (any, error) {
 		callers = append(callers, *c)
 	}
 
-	return map[string]any{
+	return mcpVersionedMap(map[string]any{
 		"name":    name,
 		"count":   len(callers),
 		"callers": callers,
-	}, nil
+	}), nil
 }

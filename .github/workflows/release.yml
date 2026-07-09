@@ -1,0 +1,188 @@
+name: Release Artifacts
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  attestations: write
+  id-token: write
+
+jobs:
+  quality:
+    name: Release quality gates
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache: true
+
+      - name: Configure git
+        run: |
+          git config --global init.defaultBranch main
+          git config --global user.name "CI"
+          git config --global user.email "ci@test"
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Run tests
+        run: go test ./...
+
+      - name: Run race detector
+        run: go test -race ./...
+
+      - name: Run fuzz smoke
+        run: go test -run=^$ -fuzz=FuzzExtractReconstructTier1 -fuzztime=20s ./pkg/entity
+
+      - name: Run protocol conformance smoke
+        run: go test ./pkg/remote -run 'TestProtocolConformanceSmokeAgainstMockOrchard|TestSupportedProtocolContractMatchesClientConstants' -count=1 -v
+
+      - name: Run static analysis
+        run: go vet ./...
+
+  build:
+    name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+    needs: quality
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            ext: ""
+          - goos: linux
+            goarch: arm64
+            ext: ""
+          - goos: darwin
+            goarch: amd64
+            ext: ""
+          - goos: darwin
+            goarch: arm64
+            ext: ""
+          - goos: windows
+            goarch: amd64
+            ext: ".exe"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache: true
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Build binary
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+          EXT: ${{ matrix.ext }}
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME}"
+          if [ "${GITHUB_REF_TYPE}" != "tag" ]; then
+            version="dev-${GITHUB_SHA::12}"
+          fi
+          build_time="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          artifact="graft_${version}_${GOOS}_${GOARCH}${EXT}"
+          mkdir -p dist
+          go build -trimpath \
+            -ldflags "-s -w -X main.version=${version} -X main.commit=${GITHUB_SHA} -X main.buildTime=${build_time}" \
+            -o "dist/${artifact}" ./cmd/graft
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: graft-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/*
+          if-no-files-found: error
+
+  metadata:
+    name: Release metadata
+    runs-on: ubuntu-latest
+    needs: build
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache: true
+
+      - name: Download binary artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: downloaded-artifacts
+
+      - name: Assemble release directory
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          find downloaded-artifacts -type f -name "graft_*" -exec cp {} dist/ \;
+          test "$(find dist -type f | wc -l)" -gt 0
+          find dist -maxdepth 1 -type f -print | sort
+
+      - name: Generate and verify checksum manifest
+        run: |
+          set -euo pipefail
+          go run ./cmd/graft release manifest --json dist > release-manifest.json
+          go run ./cmd/graft release verify-manifest --json --base-dir . release-manifest.json > release-manifest-verify.json
+
+      - name: Generate SBOM and provenance
+        run: |
+          set -euo pipefail
+          builder_id="https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          build_type="https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release.yml@${GITHUB_REF}"
+          go run ./cmd/graft release sbom --name graft dist > release-sbom.spdx.json
+          go run ./cmd/graft release provenance --builder-id "${builder_id}" --build-type "${build_type}" dist > release-provenance.intoto.json
+
+      - name: Check changelog on tag releases
+        if: github.ref_type == 'tag'
+        run: |
+          set -euo pipefail
+          if [ ! -f CHANGELOG.md ]; then
+            echo "CHANGELOG.md is required for tag releases"
+            exit 1
+          fi
+          go run ./cmd/graft release check --version "${GITHUB_REF_NAME}" --changelog CHANGELOG.md --json > release-check.json
+
+      - name: Attest tag release artifacts
+        if: github.ref_type == 'tag'
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/*
+
+      - name: Upload release metadata
+        uses: actions/upload-artifact@v4
+        with:
+          name: graft-release-metadata-${{ github.run_id }}
+          path: |
+            release-manifest.json
+            release-manifest-verify.json
+            release-sbom.spdx.json
+            release-provenance.intoto.json
+          if-no-files-found: error
+
+      - name: Upload release check
+        if: github.ref_type == 'tag'
+        uses: actions/upload-artifact@v4
+        with:
+          name: graft-release-check-${{ github.run_id }}
+          path: release-check.json
+          if-no-files-found: error

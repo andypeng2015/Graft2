@@ -12,7 +12,7 @@ func newGcCmd() *cobra.Command {
 		Short: "Pack loose objects into a pack file",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			r, err := openRepo(".")
+			r, err := openRepoForCommand(cmd, ".")
 			if err != nil {
 				return err
 			}

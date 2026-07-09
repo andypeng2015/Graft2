@@ -16,9 +16,17 @@ func newCheckoutCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			target := args[0]
 
-			r, err := openRepo(".")
+			r, err := openRepoForCommand(cmd, ".")
 			if err != nil {
 				return err
+			}
+
+			if target == "-" && !createBranch {
+				previous, err := r.PreviousCheckoutBranch()
+				if err != nil {
+					return fmt.Errorf("checkout previous branch: %w", err)
+				}
+				target = previous
 			}
 
 			if createBranch {

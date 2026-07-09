@@ -15,10 +15,7 @@ import (
 )
 
 type mcpSpawnTestResult struct {
-	Status   string             `json:"status"`
-	Result   coordd.SpawnResult `json:"result"`
-	ExitCode int                `json:"exit_code"`
-	Error    string             `json:"error"`
+	JSONCoorddSpawnOutput
 }
 
 func TestMCPToolSpawn_StartsAndListsSpawns(t *testing.T) {
@@ -57,16 +54,16 @@ func TestMCPToolSpawn_StartsAndListsSpawns(t *testing.T) {
 	if result.Status != "started" {
 		t.Fatalf("Status = %q, want started", result.Status)
 	}
-	if result.Result.Record == nil {
-		t.Fatal("Result.Record = nil, want spawn record")
+	if result.Record == nil {
+		t.Fatal("Record = nil, want spawn record")
 	}
-	if result.Result.Record.Backend != "host-direct" && result.Result.Record.Backend != "host-bwrap" {
-		t.Fatalf("Result.Record.Backend = %q, want detached host backend", result.Result.Record.Backend)
+	if result.Record.Backend != "host-direct" && result.Record.Backend != "host-bwrap" {
+		t.Fatalf("Record.Backend = %q, want detached host backend", result.Record.Backend)
 	}
-	if result.Result.Record.RequestedRuntime != "detached" {
-		t.Fatalf("Result.Record.RequestedRuntime = %q, want detached", result.Result.Record.RequestedRuntime)
+	if result.Record.RequestedRuntime != "detached" {
+		t.Fatalf("Record.RequestedRuntime = %q, want detached", result.Record.RequestedRuntime)
 	}
-	if got, ok := waitForMCPSpawnFile(result.Result.Record.StdoutPath, "hello", 2*time.Second); !ok {
+	if got, ok := waitForMCPSpawnFile(result.Record.StdoutPath, "hello", 2*time.Second); !ok {
 		t.Fatalf("stdout log missing child output: %q", got)
 	}
 
@@ -122,24 +119,24 @@ func TestMCPToolSpawn_LeaseHeartbeatAndFinish(t *testing.T) {
 	if result.Status != "authorized" {
 		t.Fatalf("Status = %q, want authorized", result.Status)
 	}
-	if result.Result.Record == nil {
-		t.Fatal("Result.Record = nil, want spawn record")
+	if result.Record == nil {
+		t.Fatal("Record = nil, want spawn record")
 	}
-	if result.Result.Record.LaunchMode != "lease" {
-		t.Fatalf("LaunchMode = %q, want lease", result.Result.Record.LaunchMode)
+	if result.Record.LaunchMode != "lease" {
+		t.Fatalf("LaunchMode = %q, want lease", result.Record.LaunchMode)
 	}
-	if !result.Result.Record.BootstrapCoord {
+	if !result.Record.BootstrapCoord {
 		t.Fatal("BootstrapCoord = false, want true")
 	}
-	if result.Result.Record.Status != "authorized" {
-		t.Fatalf("Record.Status = %q, want authorized", result.Result.Record.Status)
+	if result.Record.Status != "authorized" {
+		t.Fatalf("Record.Status = %q, want authorized", result.Record.Status)
 	}
-	if result.Result.Record.ChildAgentID == "" || result.Result.Record.ChildAgentName == "" {
-		t.Fatalf("missing bootstrapped child identity: %#v", result.Result.Record)
+	if result.Record.ChildAgentID == "" || result.Record.ChildAgentName == "" {
+		t.Fatalf("missing bootstrapped child identity: %#v", result.Record)
 	}
 
 	heartbeatAny, err := mcpDispatchAll(false, "graft_spawn_heartbeat", map[string]any{
-		"id":             result.Result.Record.ID,
+		"id":             result.Record.ID,
 		"child_agent_id": "child-subagent",
 	})
 	if err != nil {
@@ -151,7 +148,7 @@ func TestMCPToolSpawn_LeaseHeartbeatAndFinish(t *testing.T) {
 	}
 
 	finishAny, err := mcpDispatchAll(false, "graft_spawn_finish", map[string]any{
-		"id":             result.Result.Record.ID,
+		"id":             result.Record.ID,
 		"status":         "completed",
 		"child_agent_id": "child-subagent",
 	})
@@ -264,12 +261,12 @@ func TestMCPToolSpawn_ConsumeWithTaskBinding(t *testing.T) {
 		t.Fatalf("mcpDispatchAll spawn: %v", err)
 	}
 	result := decodeMCPSpawnResult(t, resultAny)
-	if result.Result.Record == nil || result.Result.Record.Task == nil || result.Result.Record.Task.ID != task.ID {
-		t.Fatalf("spawn result task = %#v, want %q", result.Result.Record.Task, task.ID)
+	if result.Record == nil || result.Record.Task == nil || result.Record.Task.ID != task.ID {
+		t.Fatalf("spawn result task = %#v, want %q", result.Record.Task, task.ID)
 	}
 
 	consumeAny, err := mcpDispatchAll(false, "graft_spawn_consume", map[string]any{
-		"id": result.Result.Record.ID,
+		"id": result.Record.ID,
 	})
 	if err != nil {
 		t.Fatalf("mcpDispatchAll consume: %v", err)
@@ -442,6 +439,9 @@ func decodeMCPSpawnResult(t *testing.T, value any) mcpSpawnTestResult {
 	if err := json.Unmarshal(data, &result); err != nil {
 		t.Fatalf("json.Unmarshal: %v\nraw: %s", err, string(data))
 	}
+	if result.SchemaVersion != JSONSchemaVersion {
+		t.Fatalf("schemaVersion = %d, want %d", result.SchemaVersion, JSONSchemaVersion)
+	}
 	return result
 }
 
@@ -453,11 +453,14 @@ func decodeMCPSpawnList(t *testing.T, value any) []coordd.SpawnRecord {
 		t.Fatalf("json.Marshal: %v", err)
 	}
 
-	var records []coordd.SpawnRecord
-	if err := json.Unmarshal(data, &records); err != nil {
+	var result JSONCoorddSpawnsOutput
+	if err := json.Unmarshal(data, &result); err != nil {
 		t.Fatalf("json.Unmarshal: %v\nraw: %s", err, string(data))
 	}
-	return records
+	if result.SchemaVersion != JSONSchemaVersion {
+		t.Fatalf("schemaVersion = %d, want %d", result.SchemaVersion, JSONSchemaVersion)
+	}
+	return result.Spawns
 }
 
 func decodeMCPSpawnRecord(t *testing.T, value any) coordd.SpawnRecord {
@@ -468,11 +471,17 @@ func decodeMCPSpawnRecord(t *testing.T, value any) coordd.SpawnRecord {
 		t.Fatalf("json.Marshal: %v", err)
 	}
 
-	var record coordd.SpawnRecord
-	if err := json.Unmarshal(data, &record); err != nil {
+	var result JSONCoorddSpawnRecordOutput
+	if err := json.Unmarshal(data, &result); err != nil {
 		t.Fatalf("json.Unmarshal: %v\nraw: %s", err, string(data))
 	}
-	return record
+	if result.SchemaVersion != JSONSchemaVersion {
+		t.Fatalf("schemaVersion = %d, want %d", result.SchemaVersion, JSONSchemaVersion)
+	}
+	if result.SpawnRecord == nil {
+		t.Fatal("SpawnRecord = nil")
+	}
+	return *result.SpawnRecord
 }
 
 func decodeMCPSpawnView(t *testing.T, value any) coordd.SpawnView {
@@ -483,11 +492,17 @@ func decodeMCPSpawnView(t *testing.T, value any) coordd.SpawnView {
 		t.Fatalf("json.Marshal: %v", err)
 	}
 
-	var view coordd.SpawnView
-	if err := json.Unmarshal(data, &view); err != nil {
+	var result JSONCoorddSpawnViewOutput
+	if err := json.Unmarshal(data, &result); err != nil {
 		t.Fatalf("json.Unmarshal: %v\nraw: %s", err, string(data))
 	}
-	return view
+	if result.SchemaVersion != JSONSchemaVersion {
+		t.Fatalf("schemaVersion = %d, want %d", result.SchemaVersion, JSONSchemaVersion)
+	}
+	if result.SpawnView == nil {
+		t.Fatal("SpawnView = nil")
+	}
+	return *result.SpawnView
 }
 
 func decodeMCPSpawnTraceView(t *testing.T, value any) coordd.SpawnTraceView {
@@ -498,11 +513,17 @@ func decodeMCPSpawnTraceView(t *testing.T, value any) coordd.SpawnTraceView {
 		t.Fatalf("json.Marshal: %v", err)
 	}
 
-	var trace coordd.SpawnTraceView
-	if err := json.Unmarshal(data, &trace); err != nil {
+	var result JSONCoorddSpawnTraceOutput
+	if err := json.Unmarshal(data, &result); err != nil {
 		t.Fatalf("json.Unmarshal: %v\nraw: %s", err, string(data))
 	}
-	return trace
+	if result.SchemaVersion != JSONSchemaVersion {
+		t.Fatalf("schemaVersion = %d, want %d", result.SchemaVersion, JSONSchemaVersion)
+	}
+	if result.SpawnTraceView == nil {
+		t.Fatal("SpawnTraceView = nil")
+	}
+	return *result.SpawnTraceView
 }
 
 func waitForMCPSpawnFile(path, needle string, timeout time.Duration) (string, bool) {

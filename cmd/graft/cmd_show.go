@@ -20,7 +20,7 @@ func newShowCmd() *cobra.Command {
 		Short: "Show commit metadata and changed files",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			r, err := openRepo(".")
+			r, err := openRepoForCommand(cmd, ".")
 			if err != nil {
 				return err
 			}

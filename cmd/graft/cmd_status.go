@@ -19,7 +19,7 @@ func newStatusCmd() *cobra.Command {
 		Short: "Show working tree status",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			r, err := openRepo(".")
+			r, err := openRepoForCommand(cmd, ".")
 			if err != nil {
 				return err
 			}
@@ -144,13 +144,21 @@ func newStatusCmd() *cobra.Command {
 					_, err := b.GitHEAD()
 					if err == nil {
 						// Simple check: just show bridge is active
-						fmt.Println("\ngit bridge: active")
+						fmt.Fprintln(out, "\ngit bridge: active")
 					}
 				}
 			}
 
-			if r.HasShadowFailures() {
-				fmt.Fprintln(out, "\nwarning: git shadow out of sync (run 'graft repair resync-git' to fix)")
+			if shadow := shadowStatus(r); shadow.NeedsAttention() {
+				fmt.Fprintf(out, "\nwarning: git shadow %s", shadow.State)
+				if shadow.Message != "" {
+					fmt.Fprintf(out, ": %s", shadow.Message)
+				}
+				fmt.Fprintln(out)
+				fmt.Fprintln(out, "details: graft repair check-git-shadow")
+				if repair := gitShadowRepairCommand(shadow); repair != "" {
+					fmt.Fprintf(out, "repair: %s\n", repair)
+				}
 			}
 
 			return nil
@@ -165,10 +173,14 @@ func newStatusCmd() *cobra.Command {
 
 // statusJSON builds and writes the JSON output for the status command.
 func statusJSON(cmd *cobra.Command, r *repo.Repo, entries []repo.StatusEntry, branch string, noCommits bool) error {
+	shadow := shadowStatus(r)
 	result := JSONStatusOutput{
-		Branch:       branch,
-		NoCommits:    noCommits,
-		ShadowDesync: r.HasShadowFailures(),
+		Branch:        branch,
+		NoCommits:     noCommits,
+		ShadowDesync:  shadow.NeedsAttention(),
+		ShadowState:   shadow.State,
+		ShadowMessage: shadow.Message,
+		ShadowRepair:  gitShadowRepairCommand(shadow),
 	}
 
 	for _, e := range entries {
@@ -221,6 +233,33 @@ func statusJSON(cmd *cobra.Command, r *repo.Repo, entries []repo.StatusEntry, br
 	}
 
 	return writeJSON(cmd.OutOrStdout(), result)
+}
+
+func shadowDesynced(r *repo.Repo) bool {
+	return shadowStatus(r).NeedsAttention()
+}
+
+func shadowStatus(r *repo.Repo) repo.GitShadowStatus {
+	status, err := r.GitShadowStatus()
+	if err != nil {
+		if status.State == "" {
+			status.State = repo.GitShadowStateUnreadable
+		}
+		if status.Message == "" {
+			status.Message = err.Error()
+		}
+	}
+	return status
+}
+
+func gitShadowRepairCommand(status repo.GitShadowStatus) string {
+	if !status.NeedsAttention() {
+		return ""
+	}
+	if status.State == repo.GitShadowStateFailureLog {
+		return "graft repair resync-git && graft repair clear-shadow-failures"
+	}
+	return "graft repair resync-git"
 }
 
 func statusShort(cmd *cobra.Command, entries []repo.StatusEntry) error {

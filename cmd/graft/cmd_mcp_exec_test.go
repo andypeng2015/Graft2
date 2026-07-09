@@ -9,15 +9,16 @@ import (
 )
 
 type mcpExecTestResult struct {
-	Input    coordd.ActionPolicyInput    `json:"input"`
-	Decision coordd.ActionPolicyDecision `json:"decision"`
-	Allowed  bool                        `json:"allowed"`
-	Exec     *coordd.ExecResult          `json:"exec"`
-	Stdout   string                      `json:"stdout"`
-	Stderr   string                      `json:"stderr"`
-	ExitCode int                         `json:"exit_code"`
-	Status   string                      `json:"status"`
-	Error    string                      `json:"error"`
+	SchemaVersion int                          `json:"schemaVersion"`
+	Input         coordd.ActionPolicyInput     `json:"input"`
+	Decision      *coordd.ActionPolicyDecision `json:"decision"`
+	Allowed       bool                         `json:"allowed"`
+	Exec          *coordd.ExecResult           `json:"exec"`
+	Stdout        string                       `json:"stdout"`
+	Stderr        string                       `json:"stderr"`
+	ExitCode      int                          `json:"exit_code"`
+	Status        string                       `json:"status"`
+	Error         string                       `json:"error"`
 }
 
 func TestMCPToolExec_CheckOnlyBlocked(t *testing.T) {
@@ -46,14 +47,17 @@ func TestMCPToolExec_CheckOnlyBlocked(t *testing.T) {
 	}
 
 	result := decodeMCPExecResult(t, resultAny)
+	if result.SchemaVersion != JSONSchemaVersion {
+		t.Fatalf("SchemaVersion = %d, want %d", result.SchemaVersion, JSONSchemaVersion)
+	}
 	if result.Status != "preflight" {
 		t.Fatalf("Status = %q, want preflight", result.Status)
 	}
 	if result.Allowed {
 		t.Fatal("Allowed = true, want false")
 	}
-	if result.Decision.Action != "HardBlock" {
-		t.Fatalf("Decision.Action = %q, want HardBlock", result.Decision.Action)
+	if result.Decision == nil || result.Decision.Action != "HardBlock" {
+		t.Fatalf("Decision = %+v, want HardBlock", result.Decision)
 	}
 	if result.Decision.Profile != "blocked" {
 		t.Fatalf("Decision.Profile = %q, want blocked", result.Decision.Profile)
@@ -96,6 +100,9 @@ func TestMCPToolExec_RunsThroughCoorddHostDirect(t *testing.T) {
 	}
 
 	result := decodeMCPExecResult(t, resultAny)
+	if result.SchemaVersion != JSONSchemaVersion {
+		t.Fatalf("SchemaVersion = %d, want %d", result.SchemaVersion, JSONSchemaVersion)
+	}
 	if result.Status != "completed" {
 		t.Fatalf("Status = %q, want completed", result.Status)
 	}
@@ -143,6 +150,9 @@ func TestMCPToolExec_NonZeroExitReturnsStructuredFailure(t *testing.T) {
 	}
 
 	result := decodeMCPExecResult(t, resultAny)
+	if result.SchemaVersion != JSONSchemaVersion {
+		t.Fatalf("SchemaVersion = %d, want %d", result.SchemaVersion, JSONSchemaVersion)
+	}
 	if result.Status != "failed" {
 		t.Fatalf("Status = %q, want failed", result.Status)
 	}

@@ -90,6 +90,34 @@ func TestResolvePushRefNames(t *testing.T) {
 	}
 }
 
+func TestShouldUseResumablePackPushRequiresAdvertisedCapability(t *testing.T) {
+	clientWithoutCaps, err := remote.NewClient("https://example.com/graft/alice/repo")
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	if shouldUseResumablePackPush(clientWithoutCaps) {
+		t.Fatal("resumable pack should be disabled before server capabilities are known")
+	}
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Graft-Capabilities", "pack,zstd,resumable-pack")
+		_, _ = w.Write([]byte(`{"refs":{}}`))
+	}))
+	defer ts.Close()
+
+	client, err := remote.NewClient(ts.URL + "/graft/alice/repo")
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	if _, err := client.ListRefs(t.Context()); err != nil {
+		t.Fatalf("ListRefs: %v", err)
+	}
+	if !shouldUseResumablePackPush(client) {
+		t.Fatal("resumable pack should be enabled after server advertises pack,zstd,resumable-pack")
+	}
+}
+
 func TestPushObjectsChunkedPrefersPackTransport(t *testing.T) {
 	var packRequests, ndjsonRequests int
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -184,6 +212,53 @@ func TestPushObjectsChunkedFallsBackWhenPackUnsupported(t *testing.T) {
 	}
 }
 
+func TestPushObjectsChunkedHonorsAdvertisedMaxBatch(t *testing.T) {
+	var objectRequests int
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/graft/alice/repo/refs":
+			w.Header().Set("Graft-Capabilities", "pack,zstd")
+			w.Header().Set("Graft-Limits", "max_batch=1")
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"refs":{}}`))
+			return
+		case r.Method == http.MethodPost && r.URL.Path == "/graft/alice/repo/objects":
+			objectRequests++
+			_, _ = io.ReadAll(r.Body)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"received":1}`))
+			return
+		default:
+			http.Error(w, "not found", http.StatusNotFound)
+		}
+	}))
+	defer ts.Close()
+
+	client, err := remote.NewClient(ts.URL + "/graft/alice/repo")
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	if _, err := client.ListRefs(context.Background()); err != nil {
+		t.Fatalf("ListRefs: %v", err)
+	}
+
+	blobA := object.MarshalBlob(&object.Blob{Data: []byte("a\n")})
+	blobB := object.MarshalBlob(&object.Blob{Data: []byte("b\n")})
+	uploaded, err := pushObjectsChunked(context.Background(), client, []remote.ObjectRecord{
+		{Hash: object.HashObject(object.TypeBlob, blobA), Type: object.TypeBlob, Data: blobA},
+		{Hash: object.HashObject(object.TypeBlob, blobB), Type: object.TypeBlob, Data: blobB},
+	})
+	if err != nil {
+		t.Fatalf("pushObjectsChunked: %v", err)
+	}
+	if uploaded != 2 {
+		t.Fatalf("uploaded = %d, want 2", uploaded)
+	}
+	if objectRequests != 2 {
+		t.Fatalf("objectRequests = %d, want 2", objectRequests)
+	}
+}
+
 func TestPushCmdCheckRejectsOversizedObject(t *testing.T) {
 	dir := t.TempDir()
 	r, err := repo.Init(dir)
@@ -234,5 +309,230 @@ func TestPushCmdCheckRejectsOversizedObject(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "16.0 MiB") {
 		t.Fatalf("error = %q, want formatted object limit", err.Error())
+	}
+}
+
+func TestPushCmdCheckUsesRemoteMaxObjectLimit(t *testing.T) {
+	dir := t.TempDir()
+	r, err := repo.Init(dir)
+	if err != nil {
+		t.Fatalf("repo.Init: %v", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, "small.txt"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if err := r.Add([]string{"small.txt"}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if _, err := r.Commit("small", "tester"); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if !strings.HasSuffix(req.URL.Path, "/refs") {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Graft-Limits", "max_object=4")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"refs":{}}`))
+	}))
+	defer ts.Close()
+
+	if err := r.SetRemote("origin", ts.URL+"/graft/alice/repo"); err != nil {
+		t.Fatalf("SetRemote: %v", err)
+	}
+
+	restore := chdirForTest(t, dir)
+	defer restore()
+
+	cmd := newPushCmd()
+	cmd.SilenceUsage = true
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"--check"})
+
+	err = cmd.Execute()
+	if err == nil {
+		t.Fatal("expected push --check to fail for the remote object limit")
+	}
+	if !strings.Contains(err.Error(), "push limit check failed") {
+		t.Fatalf("error = %q, want push limit failure", err.Error())
+	}
+	if !strings.Contains(err.Error(), "4 B") {
+		t.Fatalf("error = %q, want remote object limit", err.Error())
+	}
+}
+
+func TestPushCmdRequireSignedRejectsUnsignedBranchBeforeUpload(t *testing.T) {
+	dir := t.TempDir()
+	r, err := repo.Init(dir)
+	if err != nil {
+		t.Fatalf("repo.Init: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\n\nfunc main() {}\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if err := r.Add([]string{"main.go"}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if _, err := r.Commit("unsigned", "tester"); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+
+	remoteCalled := false
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		remoteCalled = true
+		http.Error(w, "signature policy should run before remote calls", http.StatusInternalServerError)
+	}))
+	defer ts.Close()
+
+	if err := r.SetRemote("origin", ts.URL+"/graft/alice/repo"); err != nil {
+		t.Fatalf("SetRemote: %v", err)
+	}
+
+	restore := chdirForTest(t, dir)
+	defer restore()
+
+	cmd := newPushCmd()
+	cmd.SilenceUsage = true
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"--check", "--require-signed"})
+
+	err = cmd.Execute()
+	if err == nil {
+		t.Fatal("push --check succeeded, want signature policy failure")
+	}
+	if got := commandExitCode(err); got != exitVerificationFailure {
+		t.Fatalf("exit code = %d, want %d; err=%v", got, exitVerificationFailure, err)
+	}
+	if !strings.Contains(err.Error(), "unsigned commit") {
+		t.Fatalf("error = %q, want unsigned commit failure", err.Error())
+	}
+	if remoteCalled {
+		t.Fatal("remote was called before local signature policy failed")
+	}
+}
+
+func TestPushCmdRequireSignedAllowsTrustedSignedTagCheck(t *testing.T) {
+	dir := t.TempDir()
+	r, err := repo.Init(dir)
+	if err != nil {
+		t.Fatalf("repo.Init: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\n\nfunc main() {}\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if err := r.Add([]string{"main.go"}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	head, err := r.Commit("initial", "tester")
+	if err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+
+	keyPath := filepath.Join(dir, "id_ed25519")
+	if err := repo.GenerateSigningKey(keyPath); err != nil {
+		t.Fatalf("GenerateSigningKey: %v", err)
+	}
+	signer, err := repo.NewSSHSigner(keyPath)
+	if err != nil {
+		t.Fatalf("NewSSHSigner: %v", err)
+	}
+	if _, err := r.CreateAnnotatedTagWithSigner("v1.0.0", head, "tester", "release", false, signer); err != nil {
+		t.Fatalf("CreateAnnotatedTagWithSigner: %v", err)
+	}
+	allowedSignersPath := filepath.Join(dir, "allowed_signers")
+	writeAllowedSignerForKey(t, allowedSignersPath, "release@example.com", keyPath)
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if !strings.HasSuffix(req.URL.Path, "/refs") {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"refs":{}}`))
+	}))
+	defer ts.Close()
+
+	if err := r.SetRemote("origin", ts.URL+"/graft/alice/repo"); err != nil {
+		t.Fatalf("SetRemote: %v", err)
+	}
+
+	restore := chdirForTest(t, dir)
+	defer restore()
+
+	cmd := newPushCmd()
+	cmd.SilenceUsage = true
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"--check", "--require-signed", "--allowed-signers", allowedSignersPath, "refs/tags/v1.0.0"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("push --check Execute: %v", err)
+	}
+}
+
+func TestPushDoesNotUpdateRefsWhenObjectUploadFails(t *testing.T) {
+	dir := t.TempDir()
+	r, err := repo.Init(dir)
+	if err != nil {
+		t.Fatalf("repo.Init: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\n\nfunc main() {}\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if err := r.Add([]string{"main.go"}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if _, err := r.Commit("initial", "tester"); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+
+	var objectUploads int
+	var refUpdates int
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		switch {
+		case req.Method == http.MethodGet && req.URL.Path == "/graft/alice/repo/refs":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"refs":{}}`))
+		case req.Method == http.MethodPost && req.URL.Path == "/graft/alice/repo/objects":
+			objectUploads++
+			http.Error(w, "object upload failed", http.StatusInternalServerError)
+		case req.Method == http.MethodPost && req.URL.Path == "/graft/alice/repo/refs":
+			refUpdates++
+			http.Error(w, "refs must not be updated after object upload failure", http.StatusInternalServerError)
+		default:
+			http.Error(w, "not found", http.StatusNotFound)
+		}
+	}))
+	defer ts.Close()
+
+	if err := r.SetRemote("origin", ts.URL+"/graft/alice/repo"); err != nil {
+		t.Fatalf("SetRemote: %v", err)
+	}
+
+	restore := chdirForTest(t, dir)
+	defer restore()
+
+	cmd := newPushCmd()
+	cmd.SilenceUsage = true
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+
+	err = cmd.Execute()
+	if err == nil {
+		t.Fatal("push succeeded, want object upload failure")
+	}
+	if objectUploads == 0 {
+		t.Fatal("object upload endpoint was not called")
+	}
+	if refUpdates != 0 {
+		t.Fatalf("ref update endpoint called %d time(s), want 0", refUpdates)
+	}
+	if _, err := r.ResolveRef(remoteTrackingRefName("origin", "heads/main")); err == nil {
+		t.Fatal("remote tracking ref was updated despite failed push")
 	}
 }

@@ -67,14 +67,14 @@ func newWorkspaceAddCmd(jsonFlag *bool) *cobra.Command {
 			}
 
 			if *jsonFlag {
-				return outputJSON(map[string]string{
-					"status": "added",
-					"name":   name,
-					"path":   absPath,
+				return writeJSON(cmd.OutOrStdout(), JSONWorkspaceMutationOutput{
+					Status: "added",
+					Name:   name,
+					Path:   absPath,
 				})
 			}
 
-			fmt.Printf("Workspace %q added: %s\n", name, absPath)
+			fmt.Fprintf(cmd.OutOrStdout(), "Workspace %q added: %s\n", name, absPath)
 			return nil
 		},
 	}
@@ -96,16 +96,16 @@ func newWorkspaceListCmd(jsonFlag *bool) *cobra.Command {
 			}
 
 			if *jsonFlag {
-				return outputJSON(workspaces)
+				return writeJSON(cmd.OutOrStdout(), JSONWorkspacesOutput{Workspaces: workspaces})
 			}
 
 			if len(workspaces) == 0 {
-				fmt.Println("No workspaces registered.")
-				fmt.Println("Use 'graft workspace add <name> <path>' to register one.")
+				fmt.Fprintln(cmd.OutOrStdout(), "No workspaces registered.")
+				fmt.Fprintln(cmd.OutOrStdout(), "Use 'graft workspace add <name> <path>' to register one.")
 				return nil
 			}
 
-			w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+			w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 4, 2, ' ', 0)
 			fmt.Fprintln(w, "NAME\tPATH")
 			for name, path := range workspaces {
 				fmt.Fprintf(w, "%s\t%s\n", name, path)
@@ -146,13 +146,13 @@ func newWorkspaceRemoveCmd(jsonFlag *bool) *cobra.Command {
 			}
 
 			if *jsonFlag {
-				return outputJSON(map[string]string{
-					"status": "removed",
-					"name":   name,
+				return writeJSON(cmd.OutOrStdout(), JSONWorkspaceMutationOutput{
+					Status: "removed",
+					Name:   name,
 				})
 			}
 
-			fmt.Printf("Workspace %q removed\n", name)
+			fmt.Fprintf(cmd.OutOrStdout(), "Workspace %q removed\n", name)
 			return nil
 		},
 	}

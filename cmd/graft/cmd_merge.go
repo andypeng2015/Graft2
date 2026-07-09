@@ -47,7 +47,7 @@ func newMergeCmd() *cobra.Command {
 				return nil
 			}
 
-			r, err := openRepo(".")
+			r, err := openRepoForCommand(cmd, ".")
 			if err != nil {
 				return err
 			}
@@ -101,7 +101,16 @@ func newMergeCmd() *cobra.Command {
 			}
 
 			if jsonFlag {
-				return mergeReportToJSON(cmd, report, "merge", branchName, current)
+				if err := mergeReportToJSON(cmd, report, "merge", branchName, current); err != nil {
+					return err
+				}
+				if report.HasConflicts {
+					return conflictError(
+						fmt.Errorf("merge completed with %d conflict(s); resolve conflicts and commit", report.TotalConflicts),
+						"resolve conflicts and run `graft commit`",
+					)
+				}
+				return nil
 			}
 
 			if report.IsFastForward {
@@ -124,6 +133,10 @@ func newMergeCmd() *cobra.Command {
 				}
 				fmt.Fprintln(out)
 				fmt.Fprintln(out, "fix conflicts and run graft commit")
+				return conflictError(
+					fmt.Errorf("merge completed with %d conflict(s); resolve conflicts and commit", report.TotalConflicts),
+					"resolve conflicts and run `graft commit`",
+				)
 			} else {
 				fmt.Fprintln(out, "merge completed cleanly")
 				short := string(report.MergeCommit)
@@ -169,6 +182,10 @@ func runMergePreview(r *repo.Repo, out io.Writer, branchName, current string) er
 			fmt.Fprint(out, "s")
 		}
 		fmt.Fprintln(out)
+		return conflictError(
+			fmt.Errorf("merge would produce %d conflict(s)", report.TotalConflicts),
+			"inspect conflicts with `graft merge --dry-run --json` before merging",
+		)
 	} else {
 		fmt.Fprintln(out, "merge would complete cleanly")
 	}
@@ -232,6 +249,7 @@ func mergeReportToJSON(cmd *cobra.Command, report *repo.MergeReport, action, sou
 		jf := JSONMergeFile{
 			Path:          f.Path,
 			Status:        f.Status,
+			Confidence:    f.Confidence,
 			EntityCount:   f.EntityCount,
 			ConflictCount: f.ConflictCount,
 		}
@@ -261,5 +279,14 @@ func runMergePreviewJSON(r *repo.Repo, cmd *cobra.Command, branchName, current s
 	if err != nil {
 		return err
 	}
-	return mergeReportToJSON(cmd, report, "preview", branchName, current)
+	if err := mergeReportToJSON(cmd, report, "preview", branchName, current); err != nil {
+		return err
+	}
+	if report.HasConflicts {
+		return conflictError(
+			fmt.Errorf("merge would produce %d conflict(s)", report.TotalConflicts),
+			"inspect conflicts with `graft merge --dry-run --json` before merging",
+		)
+	}
+	return nil
 }

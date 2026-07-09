@@ -24,7 +24,7 @@ func newPullCmd() *cobra.Command {
 				return fmt.Errorf("--merge and --rebase are mutually exclusive")
 			}
 
-			r, err := openRepo(".")
+			r, err := openRepoForCommand(cmd, ".")
 			if err != nil {
 				return err
 			}
@@ -123,7 +123,7 @@ func newPullCmd() *cobra.Command {
 										fmt.Fprintf(out, "CONFLICT in %s. Fix conflicts and run: graft rebase --continue\n", p)
 									}
 								}
-								return nil
+								return conflictError(err, "fix conflicts and run `graft rebase --continue`")
 							}
 							return fmt.Errorf("pull --rebase: %w", err)
 						}
@@ -132,7 +132,10 @@ func newPullCmd() *cobra.Command {
 					}
 
 					if !allowMerge {
-						return fmt.Errorf("pull would not fast-forward %s (local %s, remote %s); retry with --merge or --rebase", branch, shortHash(localHash), shortHash(remoteHash))
+						return conflictError(
+							fmt.Errorf("pull would not fast-forward %s (local %s, remote %s); retry with --merge or --rebase", branch, shortHash(localHash), shortHash(remoteHash)),
+							"retry with `graft pull --merge` or `graft pull --rebase`",
+						)
 					}
 					if currentBranch != branch {
 						return fmt.Errorf("pull --merge requires checked out branch %q (current: %q)", branch, currentBranch)
@@ -149,7 +152,10 @@ func newPullCmd() *cobra.Command {
 						return fmt.Errorf("pull: merge: %w", err)
 					}
 					if report.HasConflicts {
-						return fmt.Errorf("pull: merge completed with %d conflict(s); resolve conflicts and commit", report.TotalConflicts)
+						return conflictError(
+							fmt.Errorf("pull: merge completed with %d conflict(s); resolve conflicts and commit", report.TotalConflicts),
+							"resolve conflicts and run `graft commit`",
+						)
 					}
 					fmt.Fprintf(cmd.OutOrStdout(), "merged %s into %s (%d objects fetched)\n", shortHash(remoteHash), branch, result.ObjectCount)
 					return nil

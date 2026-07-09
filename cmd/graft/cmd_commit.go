@@ -30,13 +30,19 @@ func newCommitCmd() *cobra.Command {
 				return fmt.Errorf("commit message is required (-m)")
 			}
 
-			r, err := openRepo(".")
+			r, err := openRepoForCommand(cmd, ".")
 			if err != nil {
 				return err
 			}
 
 			if author == "" {
 				author = r.ResolveAuthor()
+			}
+			hookOptions := repo.HookRunOptions{
+				Context:       cmd.Context(),
+				Stdout:        cmd.OutOrStdout(),
+				Stderr:        cmd.ErrOrStderr(),
+				WarningWriter: cmd.ErrOrStderr(),
 			}
 
 			// Determine current branch name early (needed for hook payloads).
@@ -46,7 +52,10 @@ func newCommitCmd() *cobra.Command {
 			}
 
 			// Load hooks config and run pre-commit hooks.
-			hooksCfg, _ := repo.LoadHooksConfig(r.RootDir, nil)
+			hooksCfg, err := r.LoadHooksConfig(nil)
+			if err != nil {
+				return err
+			}
 			preCommitHooks := hooksCfg.ForPoint("pre-commit")
 			if len(preCommitHooks) > 0 {
 				payload, _ := json.Marshal(repo.PreCommitPayload{
@@ -55,7 +64,7 @@ func newCommitCmd() *cobra.Command {
 					Branch: branch,
 					Author: author,
 				})
-				if err := repo.RunHooksForPoint(cmd.Context(), r.RootDir, preCommitHooks, payload, true); err != nil {
+				if err := repo.RunHooksForPointWithOptions(cmd.Context(), r.RootDir, preCommitHooks, payload, true, hookOptions); err != nil {
 					return err
 				}
 			}
@@ -94,11 +103,11 @@ func newCommitCmd() *cobra.Command {
 					if autoSigned {
 						signedWith = resolvedKey
 					}
-					commitHash, cErr := r.CommitAmendWithSigner(message, author, signer)
+					commitHash, cErr := r.CommitAmendWithOptions(message, author, repo.CommitOptions{Signer: signer, Hooks: hookOptions})
 					h = string(commitHash)
 					commitErr = cErr
 				} else {
-					commitHash, cErr := r.CommitAmend(message, author)
+					commitHash, cErr := r.CommitAmendWithOptions(message, author, repo.CommitOptions{Hooks: hookOptions})
 					h = string(commitHash)
 					commitErr = cErr
 				}
@@ -111,11 +120,11 @@ func newCommitCmd() *cobra.Command {
 				if autoSigned {
 					signedWith = resolvedKey
 				}
-				commitHash, cErr := r.CommitWithSigner(message, author, signer)
+				commitHash, cErr := r.CommitWithOptions(message, author, repo.CommitOptions{Signer: signer, Hooks: hookOptions})
 				h = string(commitHash)
 				commitErr = cErr
 			} else {
-				commitHash, cErr := r.Commit(message, author)
+				commitHash, cErr := r.CommitWithOptions(message, author, repo.CommitOptions{Hooks: hookOptions})
 				h = string(commitHash)
 				commitErr = cErr
 			}
@@ -144,7 +153,7 @@ func newCommitCmd() *cobra.Command {
 					Message: message,
 					Author:  author,
 				})
-				_ = repo.RunHooksForPoint(cmd.Context(), r.RootDir, postCommitHooks, payload, false)
+				_ = repo.RunHooksForPointWithOptions(cmd.Context(), r.RootDir, postCommitHooks, payload, false, hookOptions)
 			}
 
 			// Short hash: first 8 characters.

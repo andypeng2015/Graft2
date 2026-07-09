@@ -149,47 +149,20 @@ func mcpToolTaskCreate(args map[string]any) (any, error) {
 		return nil, fmt.Errorf("create task: %w", err)
 	}
 
-	return map[string]any{
-		"status": "created",
-		"id":     task.ID,
-		"title":  task.Title,
-	}, nil
+	return JSONCoordTaskOutput{SchemaVersion: JSONSchemaVersion, Task: task}, nil
 }
 
 func mcpToolTaskList(args map[string]any) (any, error) {
-	type taskSummary struct {
-		ID              string   `json:"id"`
-		Title           string   `json:"title"`
-		Status          string   `json:"status"`
-		AssignedTo      string   `json:"assigned_to,omitempty"`
-		Workspace       string   `json:"workspace,omitempty"`
-		PlanID          string   `json:"plan_id,omitempty"`
-		Priority        int      `json:"priority,omitempty"`
-		Tags            []string `json:"tags,omitempty"`
-		SourceWorkspace string   `json:"source_workspace,omitempty"`
-		CreatedAt       string   `json:"created_at"`
-		UpdatedAt       string   `json:"updated_at"`
-	}
-
-	var summaries []taskSummary
+	var allTasks []JSONCoordTaskEntry
 	collectFromCoordinator := func(wsName string, c *coord.Coordinator) error {
 		tasks, err := c.ListTasks()
 		if err != nil {
 			return nil // skip errors
 		}
 		for _, t := range tasks {
-			summaries = append(summaries, taskSummary{
-				ID:              t.ID,
-				Title:           t.Title,
-				Status:          t.Status,
-				AssignedTo:      t.AssignedTo,
-				Workspace:       t.Workspace,
-				PlanID:          t.PlanID,
-				Priority:        t.Priority,
-				Tags:            t.Tags,
+			allTasks = append(allTasks, JSONCoordTaskEntry{
+				Task:            t,
 				SourceWorkspace: wsName,
-				CreatedAt:       t.CreatedAt.Format("2006-01-02T15:04:05Z"),
-				UpdatedAt:       t.UpdatedAt.Format("2006-01-02T15:04:05Z"),
 			})
 		}
 		return nil
@@ -217,31 +190,28 @@ func mcpToolTaskList(args map[string]any) (any, error) {
 	assigneeFilter := mcpArgString(args, "assignee")
 	planFilter := mcpArgString(args, "plan_id")
 
-	var filtered []taskSummary
-	for _, s := range summaries {
-		if statusFilter != "" && s.Status != statusFilter {
+	var filtered []JSONCoordTaskEntry
+	for _, task := range allTasks {
+		if statusFilter != "" && task.Status != statusFilter {
 			continue
 		}
-		if workspaceFilter != "" && s.Workspace != workspaceFilter {
+		if workspaceFilter != "" && task.Workspace != workspaceFilter {
 			continue
 		}
-		if assigneeFilter != "" && s.AssignedTo != assigneeFilter {
+		if assigneeFilter != "" && task.AssignedTo != assigneeFilter {
 			continue
 		}
-		if planFilter != "" && s.PlanID != planFilter {
+		if planFilter != "" && task.PlanID != planFilter {
 			continue
 		}
-		filtered = append(filtered, s)
+		filtered = append(filtered, task)
 	}
 
 	if filtered == nil {
-		filtered = []taskSummary{}
+		filtered = []JSONCoordTaskEntry{}
 	}
 
-	return map[string]any{
-		"count": len(filtered),
-		"tasks": filtered,
-	}, nil
+	return JSONCoordTasksOutput{SchemaVersion: JSONSchemaVersion, Tasks: filtered}, nil
 }
 
 func mcpToolTaskGet(args map[string]any) (any, error) {
@@ -259,7 +229,7 @@ func mcpToolTaskGet(args map[string]any) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	return task, nil
+	return JSONCoordTaskOutput{SchemaVersion: JSONSchemaVersion, Task: task}, nil
 }
 
 func mcpToolTaskUpdate(args map[string]any) (any, error) {
@@ -310,12 +280,7 @@ func mcpToolTaskUpdate(args map[string]any) (any, error) {
 		return nil, fmt.Errorf("update task: %w", err)
 	}
 
-	return map[string]any{
-		"status":      "updated",
-		"id":          task.ID,
-		"title":       task.Title,
-		"task_status": task.Status,
-	}, nil
+	return JSONCoordTaskOutput{SchemaVersion: JSONSchemaVersion, Task: task}, nil
 }
 
 func mcpToolTaskClaim(args map[string]any) (any, error) {
@@ -353,11 +318,12 @@ func mcpToolTaskClaim(args map[string]any) (any, error) {
 		return nil, fmt.Errorf("claim task: %w", err)
 	}
 
-	return map[string]any{
-		"status":      "claimed",
-		"task_id":     task.ID,
-		"assigned_to": agentName,
-		"task_status": task.Status,
+	return JSONCoordTaskClaimOutput{
+		SchemaVersion: JSONSchemaVersion,
+		Status:        "claimed",
+		TaskID:        task.ID,
+		AssignedTo:    agentName,
+		TaskStatus:    task.Status,
 	}, nil
 }
 
@@ -376,8 +342,5 @@ func mcpToolTaskDelete(args map[string]any) (any, error) {
 		return nil, err
 	}
 
-	return map[string]any{
-		"status": "deleted",
-		"id":     id,
-	}, nil
+	return JSONCoordTaskDeleteOutput{SchemaVersion: JSONSchemaVersion, Status: "deleted", ID: id}, nil
 }

@@ -142,6 +142,14 @@ func (s mcpSchema) toMap() map[string]any {
 	return result
 }
 
+func mcpVersionedMap(fields map[string]any) map[string]any {
+	if fields == nil {
+		fields = map[string]any{}
+	}
+	fields["schemaVersion"] = JSONSchemaVersion
+	return fields
+}
+
 // --- MCP Server ---
 
 type mcpServer struct {
@@ -293,10 +301,7 @@ func (s *mcpServer) handleRequest(request mcpRPCRequest) (any, *mcpRPCError) {
 				digest := s.activity.buildDigest()
 				_ = c.PublishDigestToFeed(digest)
 				_ = c.Heartbeat(s.activity.agentID)
-				_ = coord.TouchSession(r.GraftDir, &coord.Session{
-					AgentID:   s.activity.agentID,
-					AgentName: s.activity.agentName,
-				})
+				_, _ = coord.TouchSessionByAgentID(r.GraftDir, s.activity.agentID)
 				s.activity.reset()
 			}
 		}
@@ -430,6 +435,7 @@ func mcpToolDefs() []mcpTool {
 					"conflict_mode": {Type: "string", Description: "conflict mode: advisory, soft_block, hard_block"},
 					"watch_only":    {Type: "boolean", Description: "observe only, don't claim entities"},
 					"scope":         {Type: "string", Description: "limit coordination to package pattern"},
+					"recover":       {Type: "boolean", Description: "replace a stale or missing local agent identity"},
 				},
 				Required: []string{"name"},
 			}.toMap(),
@@ -480,7 +486,21 @@ func mcpToolDefs() []mcpTool {
 		{
 			Name:        "graft_coord_check",
 			Description: "Quick conflict check optimized for hook integration. Returns whether any other agents hold editing claims that conflict with the active agent.",
-			InputSchema: mcpSchema{}.toMap(),
+			InputSchema: mcpSchema{
+				Properties: map[string]mcpProperty{
+					"stale_after_seconds": {Type: "integer", Description: "agent heartbeat age in seconds before reporting stale"},
+				},
+			}.toMap(),
+		},
+		{
+			Name:        "graft_coord_cleanup_stale",
+			Description: "Inspect or remove stale coordination agents and their claims.",
+			InputSchema: mcpSchema{
+				Properties: map[string]mcpProperty{
+					"dry_run":             {Type: "boolean", Description: "show stale agents without removing them"},
+					"stale_after_seconds": {Type: "integer", Description: "agent heartbeat age in seconds before removing stale agents"},
+				},
+			}.toMap(),
 		},
 		{
 			Name:        "graft_coord_diff",
@@ -566,6 +586,8 @@ func mcpDispatchTool(name string, args map[string]any) (any, error) {
 		return mcpToolCoordImpact(args)
 	case "graft_coord_check":
 		return mcpToolCoordCheck(args)
+	case "graft_coord_cleanup_stale":
+		return mcpToolCoordCleanupStale(args)
 	case "graft_coord_diff":
 		return mcpToolCoordDiff(args)
 	case "graft_coord_xrefs":
@@ -672,6 +694,56 @@ func mcpArgInt(args map[string]any, key string) int {
 	}
 }
 
+func mcpArgOptionalInt(args map[string]any, key string) (int, bool, error) {
+	v, ok := args[key]
+	if !ok || v == nil {
+		return 0, false, nil
+	}
+	switch value := v.(type) {
+	case int:
+		return value, true, nil
+	case int32:
+		return int(value), true, nil
+	case int64:
+		return int(value), true, nil
+	case float64:
+		converted := int(value)
+		if value != float64(converted) {
+			return 0, true, fmt.Errorf("%s must be an integer", key)
+		}
+		return converted, true, nil
+	case json.Number:
+		n, err := strconv.Atoi(strings.TrimSpace(string(value)))
+		if err != nil {
+			return 0, true, fmt.Errorf("%s must be an integer", key)
+		}
+		return n, true, nil
+	case string:
+		n, err := strconv.Atoi(strings.TrimSpace(value))
+		if err != nil {
+			return 0, true, fmt.Errorf("%s must be an integer", key)
+		}
+		return n, true, nil
+	default:
+		return 0, true, fmt.Errorf("%s must be an integer", key)
+	}
+}
+
+func mcpApplyStaleAfter(c *coord.Coordinator, args map[string]any) error {
+	seconds, ok, err := mcpArgOptionalInt(args, "stale_after_seconds")
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return nil
+	}
+	if seconds <= 0 {
+		return fmt.Errorf("stale_after_seconds must be positive")
+	}
+	c.Config.StaleThreshold = time.Duration(seconds) * time.Second
+	return nil
+}
+
 // --- Coord summary for _meta ---
 
 func mcpBuildCoordSummary(activity *mcpActivityAccumulator) map[string]any {
@@ -749,22 +821,97 @@ func mcpToolWorkon(args map[string]any) (any, error) {
 	}
 	c := coord.New(r, cfg)
 
+	recover := mcpArgBool(args, "recover")
+	watchOnly := mcpArgBool(args, "watch_only")
+	scope := mcpArgString(args, "scope")
+	mode := "editing"
+	if watchOnly {
+		mode = "watching"
+	}
 	hostname, _ := os.Hostname()
-	info := coord.AgentInfo{
-		Name:      name,
-		Workspace: filepath.Base(r.RootDir),
-		Host:      hostname,
+
+	var id string
+	status := "joined"
+	var previousAgentID string
+	var recoveryReason string
+	existingSession, err := coord.LoadSession(r.GraftDir, name)
+	if err != nil {
+		return nil, fmt.Errorf("load session: %w", err)
+	}
+	if existingSession != nil {
+		needsRecovery, reason := workonNeedsRecovery(c, existingSession, c.Config.StaleThreshold)
+		if needsRecovery {
+			if !recover {
+				return nil, fmt.Errorf("coordination session for %q needs recovery (%s); call graft_workon with recover=true to replace it", name, reason)
+			}
+			previousAgentID = existingSession.AgentID
+			recoveryReason = reason
+			if previousAgentID != "" {
+				c.AgentID = previousAgentID
+				if err := c.DeregisterAgent(previousAgentID); err != nil {
+					return nil, fmt.Errorf("recover stale agent: %w", err)
+				}
+				_ = coord.ClearAgentPresence(r.GraftDir, previousAgentID)
+			}
+			_ = coord.RemoveSession(r.GraftDir, name)
+			c.AgentID = ""
+			status = "recovered"
+			existingSession = nil
+		}
 	}
 
-	id, err := c.RegisterAgent(info)
-	if err != nil {
-		return nil, fmt.Errorf("register agent: %w", err)
+	workspace := filepath.Base(r.RootDir)
+	if existingSession != nil {
+		id = existingSession.AgentID
+		c.AgentID = id
+		existingSession.PID = os.Getpid()
+		existingSession.Host = hostname
+		existingSession.Scope = scope
+		existingSession.Mode = mode
+		if err := coord.TouchSession(r.GraftDir, existingSession); err != nil {
+			return nil, fmt.Errorf("touch session: %w", err)
+		}
+		_ = c.Heartbeat(id)
+		status = "resumed"
+		workspace = existingSession.Workspace
+		if workspace == "" {
+			workspace = filepath.Base(r.RootDir)
+		}
+	} else {
+		info := coord.AgentInfo{
+			Name:      name,
+			Workspace: workspace,
+			Host:      hostname,
+		}
+
+		id, err = c.RegisterAgent(info)
+		if err != nil {
+			return nil, fmt.Errorf("register agent: %w", err)
+		}
+
+		sess := &coord.Session{
+			AgentID:    id,
+			AgentName:  name,
+			Workspace:  workspace,
+			Host:       hostname,
+			StartedAt:  c.AgentStartedAt(),
+			LastActive: c.AgentStartedAt(),
+			PID:        os.Getpid(),
+			Scope:      scope,
+			Mode:       mode,
+		}
+		if err := coord.SaveSession(r.GraftDir, sess); err != nil {
+			return nil, fmt.Errorf("save session: %w", err)
+		}
 	}
 
 	// Save agent ID.
 	agentIDDir := filepath.Join(r.GraftDir, "coord")
 	if err := os.MkdirAll(agentIDDir, 0o755); err != nil {
 		return nil, fmt.Errorf("create coord dir: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(agentIDDir, "agent-"+name), []byte(id), 0o644); err != nil {
+		return nil, fmt.Errorf("save named agent ID: %w", err)
 	}
 	if err := os.WriteFile(filepath.Join(agentIDDir, "agent-id"), []byte(id), 0o644); err != nil {
 		return nil, fmt.Errorf("save agent ID: %w", err)
@@ -793,16 +940,24 @@ func mcpToolWorkon(args map[string]any) (any, error) {
 	agents, _ := c.ListAgents()
 	claims, _ := c.ListClaims()
 
-	result := map[string]any{
-		"status":     "joined",
-		"agent_id":   id,
-		"agent_name": name,
-		"workspace":  info.Workspace,
-		"agents":     len(agents),
-		"claims":     len(claims),
+	result := JSONWorkonOutput{
+		SchemaVersion: JSONSchemaVersion,
+		Status:        status,
+		AgentID:       id,
+		AgentName:     name,
+		Workspace:     workspace,
+		Mode:          mode,
+		Scope:         scope,
+		Agents:        len(agents),
+		Claims:        len(claims),
+	}
+	if previousAgentID != "" {
+		result.Recovered = true
+		result.PreviousAgentID = previousAgentID
+		result.RecoveryReason = recoveryReason
 	}
 	if len(discovered) > 0 {
-		result["discovered"] = discovered
+		result.Discovered = discovered
 	}
 	return result, nil
 }
@@ -818,14 +973,14 @@ func mcpToolWorkonDone(_ map[string]any) (any, error) {
 	agentIDPath := filepath.Join(r.GraftDir, "coord", "agent-id")
 	data, err := os.ReadFile(agentIDPath)
 	if err != nil {
-		return map[string]any{"status": "already_done"}, nil
+		return JSONWorkonOutput{SchemaVersion: JSONSchemaVersion, Status: "already_done"}, nil
 	}
 	agentID := strings.TrimSpace(string(data))
 
 	agent, err := c.GetAgent(agentID)
 	if err != nil {
 		_ = os.Remove(agentIDPath)
-		return map[string]any{"status": "already_done"}, nil
+		return JSONWorkonOutput{SchemaVersion: JSONSchemaVersion, Status: "already_done"}, nil
 	}
 
 	agentName := agent.Name
@@ -835,10 +990,11 @@ func mcpToolWorkonDone(_ map[string]any) (any, error) {
 
 	_ = os.Remove(agentIDPath)
 
-	return map[string]any{
-		"status":     "left",
-		"agent_id":   agentID,
-		"agent_name": agentName,
+	return JSONWorkonOutput{
+		SchemaVersion: JSONSchemaVersion,
+		Status:        "left",
+		AgentID:       agentID,
+		AgentName:     agentName,
 	}, nil
 }
 
@@ -848,30 +1004,9 @@ func mcpToolCoordStatus(_ map[string]any) (any, error) {
 		return nil, err
 	}
 
-	agents, _ := c.ListAgents()
-	claims, _ := c.ListClaims()
-	feedEvents, _ := c.WalkFeed("", 100)
-
-	conflictCount := 0
-	claimsByEntity := make(map[string][]string)
-	for _, cl := range claims {
-		claimsByEntity[cl.EntityKeyHash] = append(claimsByEntity[cl.EntityKeyHash], cl.AgentName)
-	}
-	for _, holders := range claimsByEntity {
-		if len(holders) > 1 {
-			conflictCount++
-		}
-	}
-
-	activeID := readActiveAgentID(r)
-
-	return map[string]any{
-		"agents":    len(agents),
-		"claims":    len(claims),
-		"conflicts": conflictCount,
-		"feed":      len(feedEvents),
-		"active_id": activeID,
-	}, nil
+	result := coordStatusSummary(c, r)
+	result.SchemaVersion = JSONSchemaVersion
+	return result, nil
 }
 
 func mcpToolCoordAgents(_ map[string]any) (any, error) {
@@ -887,7 +1022,7 @@ func mcpToolCoordAgents(_ map[string]any) (any, error) {
 	if agents == nil {
 		agents = []coord.AgentInfo{}
 	}
-	return agents, nil
+	return JSONCoordAgentsOutput{SchemaVersion: JSONSchemaVersion, Agents: agents}, nil
 }
 
 func mcpToolCoordClaims(args map[string]any) (any, error) {
@@ -915,7 +1050,11 @@ func mcpToolCoordClaims(args map[string]any) (any, error) {
 	if claims == nil {
 		claims = []coord.ClaimInfo{}
 	}
-	return claims, nil
+	jsonClaims := make([]JSONCoordClaim, 0, len(claims))
+	for _, claim := range claims {
+		jsonClaims = append(jsonClaims, coordClaimToJSON(claim, ""))
+	}
+	return JSONCoordClaimsOutput{SchemaVersion: JSONSchemaVersion, Claims: jsonClaims}, nil
 }
 
 func mcpToolCoordFeed(args map[string]any) (any, error) {
@@ -946,7 +1085,11 @@ func mcpToolCoordFeed(args map[string]any) (any, error) {
 	if events == nil {
 		events = []coord.FeedEvent{}
 	}
-	return events, nil
+	jsonEvents := make([]JSONCoordFeedEntry, 0, len(events))
+	for _, event := range events {
+		jsonEvents = append(jsonEvents, coordFeedEventToJSON(event, ""))
+	}
+	return JSONCoordFeedOutput{SchemaVersion: JSONSchemaVersion, Events: jsonEvents}, nil
 }
 
 func mcpToolCoordImpact(args map[string]any) (any, error) {
@@ -982,37 +1125,34 @@ func mcpToolCoordImpact(args map[string]any) (any, error) {
 	}
 
 	if len(changes) == 0 {
-		return &coord.ImpactReport{}, nil
+		return JSONCoordImpactOutput{SchemaVersion: JSONSchemaVersion}, nil
 	}
 
 	report, err := c.AnalyzeImpact(changes, workspaces)
 	if err != nil {
 		return nil, fmt.Errorf("analyze impact: %w", err)
 	}
-	return report, nil
+	result := coordImpactReportToJSON(report)
+	result.SchemaVersion = JSONSchemaVersion
+	return result, nil
 }
 
-func mcpToolCoordCheck(_ map[string]any) (any, error) {
+func mcpToolCoordCheck(args map[string]any) (any, error) {
 	c, r, err := openCoordinator()
 	if err != nil {
+		return nil, err
+	}
+	if err := mcpApplyStaleAfter(c, args); err != nil {
 		return nil, err
 	}
 
 	activeID := readActiveAgentID(r)
 	claims, _ := c.ListClaims()
+	agents, _ := c.ListAgents()
+	activeClaims, staleAgents := coordCheckClaimAndAgentSummary(c, claims, agents)
+	unreadFeedEvents := coordCheckUnreadFeedEvents(c, activeID, 20)
 
-	type conflict struct {
-		EntityKey    string `json:"entity_key"`
-		File         string `json:"file"`
-		HeldBy       string `json:"held_by"`
-		Mode         string `json:"mode"`
-		Decision     string `json:"decision,omitempty"`
-		Reason       string `json:"reason,omitempty"`
-		Rule         string `json:"rule,omitempty"`
-		RequireForce bool   `json:"require_force,omitempty"`
-	}
-
-	var conflicts []conflict
+	var conflicts []JSONCoordCheckConflict
 	if activeID != "" {
 		for _, cl := range claims {
 			if cl.Agent != activeID && cl.Mode == coord.ClaimEditing {
@@ -1029,7 +1169,7 @@ func mcpToolCoordCheck(_ map[string]any) (any, error) {
 					Status:  "inspection_reported",
 					Message: coordDecisionMessage(req, ctx),
 				})
-				conflicts = append(conflicts, conflict{
+				conflicts = append(conflicts, JSONCoordCheckConflict{
 					EntityKey:    cl.EntityKey,
 					File:         cl.File,
 					HeldBy:       cl.AgentName,
@@ -1043,9 +1183,60 @@ func mcpToolCoordCheck(_ map[string]any) (any, error) {
 		}
 	}
 
-	return map[string]any{
-		"ok":        len(conflicts) == 0,
-		"conflicts": conflicts,
+	var readers []JSONCoordCheckReader
+	if presence, perr := c.ListPresence(); perr == nil {
+		for _, e := range coord.OtherAgentPresence(presence, activeID) {
+			readers = append(readers, JSONCoordCheckReader{AgentName: e.AgentName, File: e.File, Entity: e.Entity})
+		}
+	}
+
+	return JSONCoordCheckOutput{
+		SchemaVersion:    JSONSchemaVersion,
+		OK:               len(conflicts) == 0,
+		ActiveAgentID:    activeID,
+		AgentsExamined:   len(agents),
+		ClaimsExamined:   len(claims),
+		ActiveClaims:     activeClaims,
+		StaleAgents:      staleAgents,
+		UnreadFeedEvents: unreadFeedEvents,
+		Conflicts:        conflicts,
+		Readers:          readers,
+	}, nil
+}
+
+func mcpToolCoordCleanupStale(args map[string]any) (any, error) {
+	c, _, err := openCoordinator()
+	if err != nil {
+		return nil, err
+	}
+	if err := mcpApplyStaleAfter(c, args); err != nil {
+		return nil, err
+	}
+
+	agents, err := c.ListAgents()
+	if err != nil {
+		return nil, fmt.Errorf("list agents: %w", err)
+	}
+	staleAgents := coordStaleAgentSummaries(c, agents)
+	dryRun := mcpArgBool(args, "dry_run")
+	removed := 0
+	if !dryRun {
+		removedAgents, err := c.GCStaleAgents()
+		if err != nil {
+			return nil, fmt.Errorf("cleanup stale agents: %w", err)
+		}
+		removed = len(removedAgents)
+		staleAgents = coordStaleAgentSummaries(c, removedAgents)
+	}
+	if staleAgents == nil {
+		staleAgents = []JSONCoordCheckAgent{}
+	}
+	return JSONCoordCleanupStaleOutput{
+		SchemaVersion: JSONSchemaVersion,
+		OK:            true,
+		DryRun:        dryRun,
+		Removed:       removed,
+		StaleAgents:   staleAgents,
 	}, nil
 }
 
@@ -1076,9 +1267,10 @@ func mcpToolCoordDiff(args map[string]any) (any, error) {
 		agentClaims = []coord.ClaimInfo{}
 	}
 
-	return map[string]any{
-		"agent":  agent,
-		"claims": agentClaims,
+	return JSONCoordDiffOutput{
+		SchemaVersion: JSONSchemaVersion,
+		Agent:         agent,
+		Claims:        agentClaims,
 	}, nil
 }
 
@@ -1109,9 +1301,9 @@ func mcpToolCoordXrefs(args map[string]any) (any, error) {
 
 	sites, ok := idx.Refs[name]
 	if !ok {
-		return []coord.XrefCallSite{}, nil
+		return JSONCoordXrefsOutput{SchemaVersion: JSONSchemaVersion, References: []coord.XrefCallSite{}}, nil
 	}
-	return sites, nil
+	return JSONCoordXrefsOutput{SchemaVersion: JSONSchemaVersion, References: sites}, nil
 }
 
 func mcpToolCoordGraph(_ map[string]any) (any, error) {
@@ -1121,9 +1313,10 @@ func mcpToolCoordGraph(_ map[string]any) (any, error) {
 	}
 
 	if cfg.Workspaces == nil || len(cfg.Workspaces) == 0 {
-		return map[string]any{
-			"workspaces": map[string]string{},
-			"edges":      []any{},
+		return JSONCoordGraphOutput{
+			SchemaVersion: JSONSchemaVersion,
+			Workspaces:    map[string]string{},
+			Edges:         []JSONCoordGraphEdge{},
 		}, nil
 	}
 
@@ -1132,25 +1325,21 @@ func mcpToolCoordGraph(_ map[string]any) (any, error) {
 		return nil, fmt.Errorf("build workspace graph: %w", err)
 	}
 
-	type graphEdge struct {
-		From string `json:"from"`
-		To   string `json:"to"`
-	}
-
-	var edges []graphEdge
+	var edges []JSONCoordGraphEdge
 	for wsName := range cfg.Workspaces {
 		deps := graph.DependentsOf(wsName)
 		for _, dep := range deps {
-			edges = append(edges, graphEdge{From: dep, To: wsName})
+			edges = append(edges, JSONCoordGraphEdge{From: dep, To: wsName})
 		}
 	}
 	if edges == nil {
-		edges = []graphEdge{}
+		edges = []JSONCoordGraphEdge{}
 	}
 
-	return map[string]any{
-		"workspaces": cfg.Workspaces,
-		"edges":      edges,
+	return JSONCoordGraphOutput{
+		SchemaVersion: JSONSchemaVersion,
+		Workspaces:    cfg.Workspaces,
+		Edges:         edges,
 	}, nil
 }
 
@@ -1179,9 +1368,10 @@ func mcpToolCoordWatch(args map[string]any) (any, error) {
 		return nil, fmt.Errorf("watch: %w", err)
 	}
 
-	return map[string]any{
-		"status":     "watching",
-		"entity_key": entityKey,
+	return JSONCoordWatchOutput{
+		SchemaVersion: JSONSchemaVersion,
+		Status:        "watching",
+		EntityKey:     entityKey,
 	}, nil
 }
 
@@ -1191,19 +1381,25 @@ func mcpToolCoordUnwatch(args map[string]any) (any, error) {
 		return nil, fmt.Errorf("entity_key is required")
 	}
 
-	c, _, err := openCoordinator()
+	c, r, err := openCoordinator()
 	if err != nil {
 		return nil, err
 	}
 
+	activeID := readActiveAgentID(r)
+	if activeID == "" {
+		return nil, fmt.Errorf("no active coordination session; use graft_workon first")
+	}
+
 	keyHash := coord.EntityKeyHash(entityKey)
-	if err := c.ReleaseClaim(keyHash); err != nil {
+	if err := c.ReleaseWatch(keyHash, activeID); err != nil {
 		return nil, fmt.Errorf("unwatch: %w", err)
 	}
 
-	return map[string]any{
-		"status":     "unwatched",
-		"entity_key": entityKey,
+	return JSONCoordUnwatchOutput{
+		SchemaVersion: JSONSchemaVersion,
+		Status:        "unwatched",
+		EntityKey:     entityKey,
 	}, nil
 }
 
@@ -1228,10 +1424,11 @@ func mcpToolCoordResolve(args map[string]any) (any, error) {
 		if err := c.TransferClaim(keyHash, activeID, transferTo); err != nil {
 			return nil, fmt.Errorf("transfer: %w", err)
 		}
-		return map[string]any{
-			"status":   "transferred",
-			"key_hash": keyHash,
-			"to_agent": transferTo,
+		return JSONCoordResolveOutput{
+			SchemaVersion: JSONSchemaVersion,
+			Status:        "transferred",
+			KeyHash:       keyHash,
+			ToAgent:       transferTo,
 		}, nil
 	}
 
@@ -1239,8 +1436,9 @@ func mcpToolCoordResolve(args map[string]any) (any, error) {
 		return nil, fmt.Errorf("release: %w", err)
 	}
 
-	return map[string]any{
-		"status":   "released",
-		"key_hash": keyHash,
+	return JSONCoordResolveOutput{
+		SchemaVersion: JSONSchemaVersion,
+		Status:        "released",
+		KeyHash:       keyHash,
 	}, nil
 }

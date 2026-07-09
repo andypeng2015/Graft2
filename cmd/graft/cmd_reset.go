@@ -27,7 +27,7 @@ func newResetCmd() *cobra.Command {
    --mixed: Move HEAD and reset staging (default).
    --hard:  Move HEAD, reset staging, and restore working tree.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			r, err := openRepo(".")
+			r, err := openRepoForCommand(cmd, ".")
 			if err != nil {
 				return err
 			}

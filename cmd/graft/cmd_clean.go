@@ -15,7 +15,7 @@ func newCleanCmd() *cobra.Command {
 		Short: "Remove untracked files from the working tree",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			r, err := openRepo(".")
+			r, err := openRepoForCommand(cmd, ".")
 			if err != nil {
 				return err
 			}

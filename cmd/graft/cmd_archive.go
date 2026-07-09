@@ -1,8 +1,6 @@
 package main
 
 import (
-	"os"
-
 	"github.com/odvcencio/graft/pkg/repo"
 	"github.com/spf13/cobra"
 )
@@ -16,12 +14,12 @@ func newArchiveCmd() *cobra.Command {
 		Short: "Create an archive of files from a commit",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			r, err := openRepo(".")
+			r, err := openRepoForCommand(cmd, ".")
 			if err != nil {
 				return err
 			}
 
-			return r.Archive(os.Stdout, args[0], repo.ArchiveOptions{
+			return r.Archive(cmd.OutOrStdout(), args[0], repo.ArchiveOptions{
 				Format: format,
 				Prefix: prefix,
 			})

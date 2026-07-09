@@ -31,7 +31,7 @@ func newDiffCmd() *cobra.Command {
 		Short: "Show changes between working tree, staging, HEAD, or two refs",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			r, err := openRepo(".")
+			r, err := openRepoForCommand(cmd, ".")
 			if err != nil {
 				return err
 			}

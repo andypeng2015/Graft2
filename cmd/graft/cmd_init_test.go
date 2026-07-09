@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -28,6 +30,58 @@ func TestInit_FreshDirCreatesBothGraftAndGit(t *testing.T) {
 	// .git/ must exist
 	if _, err := os.Stat(filepath.Join(target, ".git")); err != nil {
 		t.Error("expected .git/ to exist after init (dual-repo mode)")
+	}
+}
+
+func TestInit_PrintsNextStepsForFreshDir(t *testing.T) {
+	parent := t.TempDir()
+	restore := chdirForTest(t, parent)
+	defer restore()
+
+	var out bytes.Buffer
+	cmd := newInitCmd()
+	cmd.SetArgs([]string{"myrepo"})
+	cmd.SetOut(&out)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	raw := out.String()
+	for _, want := range []string{
+		"initialized graft repository in",
+		"next steps:",
+		"cd myrepo",
+		"graft status",
+		"graft add <files>",
+		"graft commit -m \"initial commit\"",
+	} {
+		if !strings.Contains(raw, want) {
+			t.Fatalf("init output missing %q\nraw:\n%s", want, raw)
+		}
+	}
+}
+
+func TestInit_PrintsNextStepsWithoutCdForCurrentDir(t *testing.T) {
+	dir := t.TempDir()
+	restore := chdirForTest(t, dir)
+	defer restore()
+
+	var out bytes.Buffer
+	cmd := newInitCmd()
+	cmd.SetArgs([]string{"."})
+	cmd.SetOut(&out)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	raw := out.String()
+	if strings.Contains(raw, "\n  cd ") {
+		t.Fatalf("init output should not include cd for current dir:\n%s", raw)
+	}
+	for _, want := range []string{"next steps:", "graft status", "graft add <files>"} {
+		if !strings.Contains(raw, want) {
+			t.Fatalf("init output missing %q\nraw:\n%s", want, raw)
+		}
 	}
 }
 
@@ -76,6 +130,34 @@ func TestInit_GtsExcludedInGitInfoExclude(t *testing.T) {
 	}
 	if !strings.Contains(content, ".graft/") {
 		t.Errorf("expected .git/info/exclude to contain .graft/, got:\n%s", content)
+	}
+}
+
+func TestInit_ExistingGitRepoPrintsNextStepsToCommandOutput(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := runGitCaptureWithLabel(context.Background(), dir, "test-git-init", "init", "-b", "main"); err != nil {
+		t.Fatalf("git init: %v", err)
+	}
+
+	var out bytes.Buffer
+	cmd := newInitCmd()
+	cmd.SetArgs([]string{dir})
+	cmd.SetOut(&out)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init existing git failed: %v", err)
+	}
+
+	raw := out.String()
+	for _, want := range []string{
+		"initialized graft bridge alongside existing git repository",
+		"next steps:",
+		"graft status",
+		"graft add <files>",
+		"graft commit -m \"initial commit\"",
+	} {
+		if !strings.Contains(raw, want) {
+			t.Fatalf("init existing git output missing %q\nraw:\n%s", want, raw)
+		}
 	}
 }
 

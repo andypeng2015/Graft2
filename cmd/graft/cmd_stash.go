@@ -35,7 +35,7 @@ func newStashPushCmd() *cobra.Command {
 }
 
 func stashPushRun(cmd *cobra.Command, args []string) error {
-	r, err := openRepo(".")
+	r, err := openRepoForCommand(cmd, ".")
 	if err != nil {
 		return err
 	}
@@ -67,7 +67,7 @@ func newStashPopCmd() *cobra.Command {
 				return err
 			}
 
-			r, err := openRepo(".")
+			r, err := openRepoForCommand(cmd, ".")
 			if err != nil {
 				return err
 			}
@@ -107,7 +107,7 @@ func newStashApplyCmd() *cobra.Command {
 				return err
 			}
 
-			r, err := openRepo(".")
+			r, err := openRepoForCommand(cmd, ".")
 			if err != nil {
 				return err
 			}
@@ -138,7 +138,7 @@ func newStashListCmd() *cobra.Command {
 		Short: "List all stash entries",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			r, err := openRepo(".")
+			r, err := openRepoForCommand(cmd, ".")
 			if err != nil {
 				return err
 			}
@@ -169,7 +169,7 @@ func newStashDropCmd() *cobra.Command {
 				return err
 			}
 
-			r, err := openRepo(".")
+			r, err := openRepoForCommand(cmd, ".")
 			if err != nil {
 				return err
 			}
@@ -197,7 +197,7 @@ func newStashShowCmd() *cobra.Command {
 				return err
 			}
 
-			r, err := openRepo(".")
+			r, err := openRepoForCommand(cmd, ".")
 			if err != nil {
 				return err
 			}

@@ -1,12 +1,14 @@
 package main
 
 import (
-	"encoding/json"
+	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	"github.com/odvcencio/graft/pkg/coord"
 	"github.com/odvcencio/graft/pkg/repo"
@@ -18,6 +20,7 @@ func newWorkonCmd() *cobra.Command {
 	var (
 		name         string
 		done         bool
+		recover      bool
 		autoDiscover bool
 		notifyMode   string
 		conflictMode string
@@ -31,13 +34,17 @@ func newWorkonCmd() *cobra.Command {
 		Short: "Join or leave a coordination session",
 		Long: `Start coordinating entity-level changes with other agents in this repository.
 
-Use --as to register as a named agent. Use --done to deregister and release all claims.`,
+Use --as to register as a named agent. Use --done to deregister and release all claims.
+Use --recover --as <name> to replace a stale local identity after an interrupted session.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if recover && done {
+				return fmt.Errorf("--recover cannot be combined with --done")
+			}
 			if !done && name == "" {
 				return fmt.Errorf("either --as <name> or --done is required")
 			}
 
-			r, err := openRepo(".")
+			r, err := openRepoForCommand(cmd, ".")
 			if err != nil {
 				return fmt.Errorf("open repo: %w", err)
 			}
@@ -49,15 +56,18 @@ Use --as to register as a named agent. Use --done to deregister and release all 
 			c := coord.New(r, cfg)
 
 			if done {
-				return workonDone(c, r, name, jsonFlag)
+				return workonDone(cmd.OutOrStdout(), c, r, name, jsonFlag)
 			}
 
-			return workonStart(c, r, name, autoDiscover, notifyMode, watchOnly, scope, jsonFlag)
+			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
+			defer stop()
+			return workonStartWithContext(ctx, cmd.OutOrStdout(), c, r, name, autoDiscover, notifyMode, watchOnly, scope, recover, jsonFlag)
 		},
 	}
 
 	cmd.Flags().StringVar(&name, "as", "", "agent name")
 	cmd.Flags().BoolVar(&done, "done", false, "leave coordination session")
+	cmd.Flags().BoolVar(&recover, "recover", false, "replace a stale or missing local agent identity")
 	cmd.Flags().BoolVar(&autoDiscover, "auto-discover", false, "discover workspaces from go.mod")
 	cmd.Flags().StringVar(&notifyMode, "notify", "all", "notification filter: all, breaking")
 	cmd.Flags().StringVar(&conflictMode, "conflict-mode", "", "override conflict mode")
@@ -68,7 +78,30 @@ Use --as to register as a named agent. Use --done to deregister and release all 
 	return cmd
 }
 
-func workonStart(c *coord.Coordinator, r *repo.Repo, name string, autoDiscover bool, notifyMode string, watchOnly bool, scope string, jsonOutput bool) error {
+func workonStart(out io.Writer, c *coord.Coordinator, r *repo.Repo, name string, autoDiscover bool, notifyMode string, watchOnly bool, scope string, recover bool, jsonOutput bool) error {
+	return workonStartWithContext(context.Background(), out, c, r, name, autoDiscover, notifyMode, watchOnly, scope, recover, jsonOutput)
+}
+
+func workonStartWithContext(ctx context.Context, out io.Writer, c *coord.Coordinator, r *repo.Repo, name string, autoDiscover bool, notifyMode string, watchOnly bool, scope string, recover bool, jsonOutput bool) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	cleanup := workonStartupCleanup{c: c, r: r, name: name}
+	checkCanceled := func() error {
+		if err := ctx.Err(); err != nil {
+			cleanup.run()
+			return fmt.Errorf("workon start canceled: %w", err)
+		}
+		return nil
+	}
+	startupError := func(format string, args ...any) error {
+		cleanup.run()
+		return fmt.Errorf(format, args...)
+	}
+	if err := checkCanceled(); err != nil {
+		return err
+	}
+
 	hostname, _ := os.Hostname()
 
 	mode := "editing"
@@ -79,8 +112,35 @@ func workonStart(c *coord.Coordinator, r *repo.Repo, name string, autoDiscover b
 	// Check for existing persistent session
 	var id string
 	var resumed bool
-	existingSession, _ := coord.LoadSession(r.GraftDir, name)
-	if existingSession != nil && !coord.IsSessionStale(existingSession, coord.SessionStaleThreshold) {
+	var recovered bool
+	var recoveryReason string
+	var previousAgentID string
+	existingSession, err := coord.LoadSession(r.GraftDir, name)
+	if err != nil {
+		return fmt.Errorf("load session: %w", err)
+	}
+	if existingSession != nil {
+		needsRecovery, reason := workonNeedsRecovery(c, existingSession, c.Config.StaleThreshold)
+		if needsRecovery {
+			if !recover {
+				return fmt.Errorf("coordination session for %q needs recovery (%s); run 'graft workon --recover --as %s' to replace it", name, reason, name)
+			}
+			previousAgentID = existingSession.AgentID
+			recovered = true
+			recoveryReason = reason
+			if previousAgentID != "" {
+				c.AgentID = previousAgentID
+				if err := c.DeregisterAgent(previousAgentID); err != nil {
+					return fmt.Errorf("recover stale agent: %w", err)
+				}
+				_ = coord.ClearAgentPresence(r.GraftDir, previousAgentID)
+			}
+			_ = coord.RemoveSession(r.GraftDir, name)
+			c.AgentID = ""
+			existingSession = nil
+		}
+	}
+	if existingSession != nil {
 		// Resume: reuse the existing agent ID, update PID/host
 		id = existingSession.AgentID
 		c.AgentID = id
@@ -107,6 +167,11 @@ func workonStart(c *coord.Coordinator, r *repo.Repo, name string, autoDiscover b
 		if err != nil {
 			return fmt.Errorf("register agent: %w", err)
 		}
+		cleanup.agentID = id
+		cleanup.cleanupNewSession = true
+		if err := checkCanceled(); err != nil {
+			return err
+		}
 
 		// Write persistent session
 		sess := &coord.Session{
@@ -121,32 +186,28 @@ func workonStart(c *coord.Coordinator, r *repo.Repo, name string, autoDiscover b
 			Mode:       mode,
 		}
 		if err := coord.SaveSession(r.GraftDir, sess); err != nil {
-			return fmt.Errorf("save session: %w", err)
+			return startupError("save session: %w", err)
+		}
+		if err := checkCanceled(); err != nil {
+			return err
 		}
 	}
-
-	// Set up signal handler to deregister agent on SIGTERM/SIGINT
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
-	go func() {
-		<-sigCh
-		_ = c.DeregisterAgent(id)
-		_ = coord.RemoveSession(r.GraftDir, name)
-		os.Exit(0)
-	}()
 
 	// Save the agent ID to .graft/coord/agent-{name} for later use by --done.
 	// Per-agent files prevent concurrent agents from clobbering each other's session.
 	agentIDDir := filepath.Join(r.GraftDir, "coord")
 	if err := os.MkdirAll(agentIDDir, 0o755); err != nil {
-		return fmt.Errorf("create coord dir: %w", err)
+		return startupError("create coord dir: %w", err)
 	}
 	agentFileName := "agent-" + name
 	if err := os.WriteFile(filepath.Join(agentIDDir, agentFileName), []byte(id), 0o644); err != nil {
-		return fmt.Errorf("save agent ID: %w", err)
+		return startupError("save agent ID: %w", err)
 	}
 	// Also write a legacy agent-id for backwards compat with single-agent workflows
 	_ = os.WriteFile(filepath.Join(agentIDDir, "agent-id"), []byte(id), 0o644)
+	if err := checkCanceled(); err != nil {
+		return err
+	}
 
 	// Auto-discover workspaces
 	var discovered map[string]string
@@ -167,58 +228,113 @@ func workonStart(c *coord.Coordinator, r *repo.Repo, name string, autoDiscover b
 			}
 		}
 	}
+	if err := checkCanceled(); err != nil {
+		return err
+	}
 
 	// Get current agent and peer state
 	agents, _ := c.ListAgents()
 	claims, _ := c.ListClaims()
+	if err := checkCanceled(); err != nil {
+		return err
+	}
 
 	status := "joined"
 	if resumed {
 		status = "resumed"
+	} else if recovered {
+		status = "recovered"
 	}
 	result := workonResult{
-		Status:    status,
-		AgentID:   id,
-		AgentName: name,
-		Workspace: filepath.Base(r.RootDir),
-		Agents:    len(agents),
-		Claims:    len(claims),
-		Mode:      mode,
-		Scope:     scope,
-		Notify:    notifyMode,
+		Status:          status,
+		AgentID:         id,
+		AgentName:       name,
+		Workspace:       filepath.Base(r.RootDir),
+		Agents:          len(agents),
+		Claims:          len(claims),
+		Mode:            mode,
+		Scope:           scope,
+		Notify:          notifyMode,
+		Recovered:       recovered,
+		PreviousAgentID: previousAgentID,
+		RecoveryReason:  recoveryReason,
 	}
 	if len(discovered) > 0 {
 		result.Discovered = discovered
 	}
 
 	if jsonOutput {
-		return outputJSON(result)
+		return writeJSON(out, result)
 	}
 
 	if resumed {
-		fmt.Printf("Coordination session resumed\n")
+		fmt.Fprintln(out, "Coordination session resumed")
+	} else if recovered {
+		fmt.Fprintln(out, "Coordination session recovered")
 	} else {
-		fmt.Printf("Coordination session started\n")
+		fmt.Fprintln(out, "Coordination session started")
 	}
-	fmt.Printf("  Agent:     %s (%s)\n", name, id)
-	fmt.Printf("  Workspace: %s\n", filepath.Base(r.RootDir))
-	fmt.Printf("  Mode:      %s\n", result.Mode)
+	fmt.Fprintf(out, "  Agent:     %s (%s)\n", name, id)
+	if previousAgentID != "" {
+		fmt.Fprintf(out, "  Replaced:  %s (%s)\n", previousAgentID, recoveryReason)
+	}
+	fmt.Fprintf(out, "  Workspace: %s\n", filepath.Base(r.RootDir))
+	fmt.Fprintf(out, "  Mode:      %s\n", result.Mode)
 	if scope != "" {
-		fmt.Printf("  Scope:     %s\n", scope)
+		fmt.Fprintf(out, "  Scope:     %s\n", scope)
 	}
-	fmt.Printf("  Peers:     %d agent(s) active\n", len(agents)-1)
-	fmt.Printf("  Claims:    %d active\n", len(claims))
+	fmt.Fprintf(out, "  Peers:     %d agent(s) active\n", len(agents)-1)
+	fmt.Fprintf(out, "  Claims:    %d active\n", len(claims))
 	if len(discovered) > 0 {
-		fmt.Printf("  Discovered workspaces:\n")
+		fmt.Fprintln(out, "  Discovered workspaces:")
 		for wsName, wsPath := range discovered {
-			fmt.Printf("    %s -> %s\n", wsName, wsPath)
+			fmt.Fprintf(out, "    %s -> %s\n", wsName, wsPath)
 		}
 	}
 
 	return nil
 }
 
-func workonDone(c *coord.Coordinator, r *repo.Repo, name string, jsonOutput bool) error {
+type workonStartupCleanup struct {
+	c                 *coord.Coordinator
+	r                 *repo.Repo
+	name              string
+	agentID           string
+	cleanupNewSession bool
+}
+
+func (cleanup workonStartupCleanup) run() {
+	if !cleanup.cleanupNewSession || cleanup.c == nil || cleanup.r == nil || cleanup.agentID == "" {
+		return
+	}
+	_ = cleanup.c.DeregisterAgent(cleanup.agentID)
+	_ = coord.ClearAgentPresence(cleanup.r.GraftDir, cleanup.agentID)
+	if cleanup.name != "" {
+		_ = coord.RemoveSession(cleanup.r.GraftDir, cleanup.name)
+		_ = os.Remove(filepath.Join(cleanup.r.GraftDir, "coord", "agent-"+cleanup.name))
+	}
+
+	legacyPath := filepath.Join(cleanup.r.GraftDir, "coord", "agent-id")
+	if data, err := os.ReadFile(legacyPath); err == nil && string(data) == cleanup.agentID {
+		_ = os.Remove(legacyPath)
+	}
+}
+
+func workonNeedsRecovery(c *coord.Coordinator, sess *coord.Session, staleThreshold time.Duration) (bool, string) {
+	agent, err := c.GetAgent(sess.AgentID)
+	if err != nil {
+		if coord.IsSessionStale(sess, coord.SessionStaleThreshold) {
+			return true, "stale_session_missing_agent_ref"
+		}
+		return true, "missing_agent_ref"
+	}
+	if coord.IsSessionStale(sess, coord.SessionStaleThreshold) && agent.HeartbeatAt.Before(time.Now().UTC().Add(-staleThreshold)) {
+		return true, "stale_session_and_heartbeat"
+	}
+	return false, ""
+}
+
+func workonDone(out io.Writer, c *coord.Coordinator, r *repo.Repo, name string, jsonOutput bool) error {
 	coordDir := filepath.Join(r.GraftDir, "coord")
 
 	var agentID string
@@ -268,9 +384,9 @@ func workonDone(c *coord.Coordinator, r *repo.Repo, name string, jsonOutput bool
 			_ = os.Remove(filepath.Join(coordDir, "agent-id"))
 		}
 		if jsonOutput {
-			return outputJSON(workonResult{Status: "already_done"})
+			return writeJSON(out, workonResult{Status: "already_done"})
 		}
-		fmt.Println("No active coordination session found.")
+		fmt.Fprintln(out, "No active coordination session found.")
 		return nil
 	}
 
@@ -306,15 +422,15 @@ func workonDone(c *coord.Coordinator, r *repo.Repo, name string, jsonOutput bool
 	_ = os.Remove(filepath.Join(coordDir, "agent-id"))
 
 	if jsonOutput {
-		return outputJSON(workonResult{
+		return writeJSON(out, workonResult{
 			Status:    "left",
 			AgentID:   agentID,
 			AgentName: agentName,
 		})
 	}
 
-	fmt.Printf("Coordination session ended for %s (%s)\n", agentName, agentID)
-	fmt.Println("All claims released.")
+	fmt.Fprintf(out, "Coordination session ended for %s (%s)\n", agentName, agentID)
+	fmt.Fprintln(out, "All claims released.")
 	return nil
 }
 
@@ -328,21 +444,4 @@ func isProcessAlive(pid int) bool {
 	return proc.Signal(syscall.Signal(0)) == nil
 }
 
-type workonResult struct {
-	Status     string            `json:"status"`
-	AgentID    string            `json:"agent_id,omitempty"`
-	AgentName  string            `json:"agent_name,omitempty"`
-	Workspace  string            `json:"workspace,omitempty"`
-	Mode       string            `json:"mode,omitempty"`
-	Scope      string            `json:"scope,omitempty"`
-	Notify     string            `json:"notify,omitempty"`
-	Agents     int               `json:"agents,omitempty"`
-	Claims     int               `json:"claims,omitempty"`
-	Discovered map[string]string `json:"discovered,omitempty"`
-}
-
-func outputJSON(v any) error {
-	enc := json.NewEncoder(os.Stdout)
-	enc.SetIndent("", "  ")
-	return enc.Encode(v)
-}
+type workonResult = JSONWorkonOutput

@@ -286,6 +286,121 @@ func TestVerifyCmd_JSON_Signatures(t *testing.T) {
 	if !result.Results[0].Unsigned {
 		t.Error("unsigned = false, want true for unsigned commit")
 	}
+	if !result.OK {
+		t.Error("ok = false, want true when unsigned commits are advisory")
+	}
+	if result.Checked != 1 || result.Unsigned != 1 || result.Valid != 0 || result.Invalid != 0 {
+		t.Fatalf("unexpected signature summary: %+v", result)
+	}
+}
+
+func TestVerifyCmdRequireSignedFailsOnUnsigned(t *testing.T) {
+	dir := t.TempDir()
+	r, err := repo.Init(dir)
+	if err != nil {
+		t.Fatalf("repo.Init: %v", err)
+	}
+
+	writeVerifyCmdFile(t, filepath.Join(dir, "main.go"), []byte("package main\n\nfunc main() {}\n"))
+	if err := r.Add([]string{"main.go"}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if _, err := r.Commit("initial", "tester"); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+
+	restore := chdirForTest(t, dir)
+	defer restore()
+
+	var out bytes.Buffer
+	cmd := newVerifyCmd()
+	cmd.SilenceUsage = true
+	cmd.SetOut(&out)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"--signatures", "--require-signed", "--json"})
+
+	err = cmd.Execute()
+	if err == nil {
+		t.Fatal("Execute succeeded, want verification failure")
+	}
+	if got := commandExitCode(err); got != exitVerificationFailure {
+		t.Fatalf("exit code = %d, want %d; err=%v", got, exitVerificationFailure, err)
+	}
+
+	var result JSONVerifyOutput
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+		t.Fatalf("output is not valid JSON: %v\nraw: %s", err, out.String())
+	}
+	if result.OK {
+		t.Fatal("ok = true, want false")
+	}
+	if !result.RequireSigned || result.Checked != 1 || result.Unsigned != 1 || result.Invalid != 0 {
+		t.Fatalf("unexpected signature summary: %+v", result)
+	}
+}
+
+func TestVerifyCmdAllowedSignersRequireSigned(t *testing.T) {
+	dir := t.TempDir()
+	r, err := repo.Init(dir)
+	if err != nil {
+		t.Fatalf("repo.Init: %v", err)
+	}
+
+	keyPath := filepath.Join(dir, "id_ed25519")
+	if err := repo.GenerateSigningKey(keyPath); err != nil {
+		t.Fatalf("GenerateSigningKey: %v", err)
+	}
+	signer, err := repo.NewSSHSigner(keyPath)
+	if err != nil {
+		t.Fatalf("NewSSHSigner: %v", err)
+	}
+	allowedSignersPath := filepath.Join(dir, "allowed_signers")
+	writeAllowedSignerForKey(t, allowedSignersPath, "tester@example.com", keyPath)
+
+	writeVerifyCmdFile(t, filepath.Join(dir, "main.go"), []byte("package main\n\nfunc main() {}\n"))
+	if err := r.Add([]string{"main.go"}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if _, err := r.CommitWithSigner("signed", "tester", signer); err != nil {
+		t.Fatalf("CommitWithSigner: %v", err)
+	}
+
+	writeVerifyCmdFile(t, filepath.Join(dir, "main.go"), []byte("package main\n\nfunc main() { _ = 2 }\n"))
+	if err := r.Add([]string{"main.go"}); err != nil {
+		t.Fatalf("Add second: %v", err)
+	}
+	if _, err := r.Commit("unsigned", "tester"); err != nil {
+		t.Fatalf("Commit unsigned: %v", err)
+	}
+
+	restore := chdirForTest(t, dir)
+	defer restore()
+
+	var out bytes.Buffer
+	cmd := newVerifyCmd()
+	cmd.SilenceUsage = true
+	cmd.SetOut(&out)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"--signatures", "--require-signed", "--allowed-signers", allowedSignersPath, "--json"})
+
+	err = cmd.Execute()
+	if err == nil {
+		t.Fatal("Execute succeeded, want verification failure")
+	}
+	if got := commandExitCode(err); got != exitVerificationFailure {
+		t.Fatalf("exit code = %d, want %d; err=%v", got, exitVerificationFailure, err)
+	}
+
+	var result JSONVerifyOutput
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+		t.Fatalf("output is not valid JSON: %v\nraw: %s", err, out.String())
+	}
+	if result.OK {
+		t.Fatal("ok = true, want false")
+	}
+	if !result.RequireSigned || !result.AllowedSigners || result.Checked != 2 || result.Valid != 1 || result.Unsigned != 1 || result.Invalid != 0 {
+		t.Fatalf("unexpected signature summary: %+v", result)
+	}
 }
 
 // TestVerifyCommitCmd_JSON tests --json on the verify commit subcommand.
@@ -335,6 +450,120 @@ func TestVerifyCommitCmd_JSON(t *testing.T) {
 	}
 }
 
+func TestVerifyCommitCmdAllowedSignersJSON(t *testing.T) {
+	dir := t.TempDir()
+	r, err := repo.Init(dir)
+	if err != nil {
+		t.Fatalf("repo.Init: %v", err)
+	}
+
+	keyPath := filepath.Join(dir, "id_ed25519")
+	if err := repo.GenerateSigningKey(keyPath); err != nil {
+		t.Fatalf("GenerateSigningKey: %v", err)
+	}
+	signer, err := repo.NewSSHSigner(keyPath)
+	if err != nil {
+		t.Fatalf("NewSSHSigner: %v", err)
+	}
+	allowedSignersPath := filepath.Join(dir, "allowed_signers")
+	writeAllowedSignerForKey(t, allowedSignersPath, "tester@example.com", keyPath)
+
+	writeVerifyCmdFile(t, filepath.Join(dir, "main.go"), []byte("package main\n\nfunc main() {}\n"))
+	if err := r.Add([]string{"main.go"}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	commitHash, err := r.CommitWithSigner("signed", "tester", signer)
+	if err != nil {
+		t.Fatalf("CommitWithSigner: %v", err)
+	}
+
+	restore := chdirForTest(t, dir)
+	defer restore()
+
+	var out bytes.Buffer
+	cmd := newVerifyCmd()
+	cmd.SilenceUsage = true
+	cmd.SetOut(&out)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"commit", string(commitHash), "--allowed-signers", allowedSignersPath, "--json"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	var result JSONVerifyOutput
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+		t.Fatalf("output is not valid JSON: %v\nraw: %s", err, out.String())
+	}
+	if !result.OK || !result.AllowedSigners || result.Checked != 1 || result.Valid != 1 {
+		t.Fatalf("unexpected signature summary: %+v", result)
+	}
+	if got := result.Results[0].SignerKey; got != "tester@example.com" {
+		t.Fatalf("signerKey = %q, want allowed signer name", got)
+	}
+}
+
+func TestVerifyCommitCmdAllowedSignersRejectsUntrusted(t *testing.T) {
+	dir := t.TempDir()
+	r, err := repo.Init(dir)
+	if err != nil {
+		t.Fatalf("repo.Init: %v", err)
+	}
+
+	signingKeyPath := filepath.Join(dir, "signing")
+	otherKeyPath := filepath.Join(dir, "other")
+	if err := repo.GenerateSigningKey(signingKeyPath); err != nil {
+		t.Fatalf("GenerateSigningKey signing: %v", err)
+	}
+	if err := repo.GenerateSigningKey(otherKeyPath); err != nil {
+		t.Fatalf("GenerateSigningKey other: %v", err)
+	}
+	signer, err := repo.NewSSHSigner(signingKeyPath)
+	if err != nil {
+		t.Fatalf("NewSSHSigner: %v", err)
+	}
+	allowedSignersPath := filepath.Join(dir, "allowed_signers")
+	writeAllowedSignerForKey(t, allowedSignersPath, "other@example.com", otherKeyPath)
+
+	writeVerifyCmdFile(t, filepath.Join(dir, "main.go"), []byte("package main\n\nfunc main() {}\n"))
+	if err := r.Add([]string{"main.go"}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	commitHash, err := r.CommitWithSigner("signed", "tester", signer)
+	if err != nil {
+		t.Fatalf("CommitWithSigner: %v", err)
+	}
+
+	restore := chdirForTest(t, dir)
+	defer restore()
+
+	var out bytes.Buffer
+	cmd := newVerifyCmd()
+	cmd.SilenceUsage = true
+	cmd.SetOut(&out)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"commit", string(commitHash), "--allowed-signers", allowedSignersPath, "--json"})
+
+	err = cmd.Execute()
+	if err == nil {
+		t.Fatal("Execute succeeded, want verification failure")
+	}
+	if got := commandExitCode(err); got != exitVerificationFailure {
+		t.Fatalf("exit code = %d, want %d; err=%v", got, exitVerificationFailure, err)
+	}
+
+	var result JSONVerifyOutput
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+		t.Fatalf("output is not valid JSON: %v\nraw: %s", err, out.String())
+	}
+	if result.OK || !result.AllowedSigners || result.Invalid != 1 {
+		t.Fatalf("unexpected signature summary: %+v", result)
+	}
+	if !strings.Contains(result.Results[0].Error, "not in allowed signers") {
+		t.Fatalf("error = %q, want allowed signers failure", result.Results[0].Error)
+	}
+}
+
 // TestVerifyCmd_JSON_NoHumanOutput verifies --json suppresses human-readable output.
 func TestVerifyCmd_JSON_NoHumanOutput(t *testing.T) {
 	dir := t.TempDir()
@@ -374,6 +603,98 @@ func TestVerifyCmd_JSON_NoHumanOutput(t *testing.T) {
 	if !strings.HasPrefix(strings.TrimSpace(raw), "{") {
 		t.Errorf("output does not start with '{': %s", raw)
 	}
+}
+
+func TestVerifyCmdJSONReportsBrokenRef(t *testing.T) {
+	dir := t.TempDir()
+	r, err := repo.Init(dir)
+	if err != nil {
+		t.Fatalf("repo.Init: %v", err)
+	}
+
+	bad := object.Hash("cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc")
+	refPath := filepath.Join(r.GraftDir, "refs", "heads", "bad")
+	if err := os.MkdirAll(filepath.Dir(refPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(refPath, []byte(string(bad)+"\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(ref): %v", err)
+	}
+
+	restore := chdirForTest(t, dir)
+	defer restore()
+
+	var out bytes.Buffer
+	cmd := newVerifyCmd()
+	cmd.SilenceUsage = true
+	cmd.SetOut(&out)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"--json"})
+
+	if err := cmd.Execute(); err == nil {
+		t.Fatal("verify should fail when repository has integrity errors")
+	}
+
+	var result JSONVerifyOutput
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+		t.Fatalf("output is not valid JSON: %v\nraw: %s", err, out.String())
+	}
+	if result.OK {
+		t.Fatal("ok = true, want false")
+	}
+	if !verifyOutputHasCode(result, "ref_target_unreachable") {
+		t.Fatalf("diagnostics missing ref_target_unreachable: %+v", result.Diagnostics)
+	}
+}
+
+func TestVerifyCmdJSONReportsCoordFeedCorruption(t *testing.T) {
+	dir := t.TempDir()
+	r, err := repo.Init(dir)
+	if err != nil {
+		t.Fatalf("repo.Init: %v", err)
+	}
+
+	h, err := r.Store.WriteBlob(&object.Blob{Data: []byte("{not-json")})
+	if err != nil {
+		t.Fatalf("WriteBlob: %v", err)
+	}
+	if err := r.UpdateRefCAS("refs/coord/feed/head", h, ""); err != nil {
+		t.Fatalf("UpdateRefCAS(coord feed head): %v", err)
+	}
+
+	restore := chdirForTest(t, dir)
+	defer restore()
+
+	var out bytes.Buffer
+	cmd := newVerifyCmd()
+	cmd.SilenceUsage = true
+	cmd.SetOut(&out)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"--json"})
+
+	if err := cmd.Execute(); err == nil {
+		t.Fatal("verify should fail when coord feed is corrupt")
+	}
+
+	var result JSONVerifyOutput
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+		t.Fatalf("output is not valid JSON: %v\nraw: %s", err, out.String())
+	}
+	if result.OK {
+		t.Fatal("ok = true, want false")
+	}
+	if !verifyOutputHasCode(result, "coord_feed_entry_malformed") {
+		t.Fatalf("diagnostics missing coord_feed_entry_malformed: %+v", result.Diagnostics)
+	}
+}
+
+func verifyOutputHasCode(result JSONVerifyOutput, code string) bool {
+	for _, d := range result.Diagnostics {
+		if d.Code == code {
+			return true
+		}
+	}
+	return false
 }
 
 func TestVerifyPushLimitsCmdJSON(t *testing.T) {

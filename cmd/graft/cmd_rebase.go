@@ -51,19 +51,36 @@ Use --continue after resolving conflicts, --abort to cancel, or --skip to skip a
 				return fmt.Errorf("--autosquash requires --interactive (-i)")
 			}
 
-			r, err := openRepo(".")
+			r, err := openRepoForCommand(cmd, ".")
 			if err != nil {
 				return err
 			}
 
 			out := cmd.OutOrStdout()
+			interactiveIO := repo.InteractiveRebaseOptions{
+				Context: cmd.Context(),
+				Stdin:   cmd.InOrStdin(),
+				Stdout:  cmd.OutOrStdout(),
+				Stderr:  cmd.ErrOrStderr(),
+				HookOptions: repo.HookRunOptions{
+					Context:       cmd.Context(),
+					Stdout:        cmd.OutOrStdout(),
+					Stderr:        cmd.ErrOrStderr(),
+					WarningWriter: cmd.ErrOrStderr(),
+				},
+			}
+			opts := repo.RebaseOptions{
+				Autostash:     autostashFlag,
+				WarningWriter: cmd.ErrOrStderr(),
+				Interactive:   interactiveIO,
+			}
 
 			// Handle control flags (no positional args expected).
 			if continueFlag {
 				if len(args) > 0 {
 					return fmt.Errorf("--continue takes no positional arguments")
 				}
-				return rebaseContinue(r, out)
+				return rebaseContinue(r, out, opts)
 			}
 			if abortFlag {
 				if len(args) > 0 {
@@ -84,15 +101,11 @@ Use --continue after resolving conflicts, --abort to cancel, or --skip to skip a
 			}
 			upstream := args[0]
 
-			opts := repo.RebaseOptions{
-				Autostash: autostashFlag,
-			}
-
 			if interactiveFlag {
 				if autosquashFlag {
-					return rebaseInteractiveAutosquashStart(r, out, upstream)
+					return rebaseInteractiveAutosquashStart(r, out, upstream, interactiveIO)
 				}
-				return rebaseInteractiveStart(r, out, upstream)
+				return rebaseInteractiveStart(r, out, upstream, interactiveIO)
 			}
 			if ontoFlag != "" {
 				return rebaseOnto(r, out, ontoFlag, upstream, opts)
@@ -113,7 +126,7 @@ Use --continue after resolving conflicts, --abort to cancel, or --skip to skip a
 }
 
 // rebaseInteractiveStart handles: graft rebase -i <upstream>
-func rebaseInteractiveStart(r *repo.Repo, out io.Writer, upstream string) error {
+func rebaseInteractiveStart(r *repo.Repo, out io.Writer, upstream string, opts repo.InteractiveRebaseOptions) error {
 	ontoHash, err := resolveTarget(r, upstream)
 	if err != nil {
 		return err
@@ -134,12 +147,12 @@ func rebaseInteractiveStart(r *repo.Repo, out io.Writer, upstream string) error 
 
 	fmt.Fprintf(out, "Interactive rebase onto %s... %d commit(s)\n", shortHash(ontoHash), count)
 
-	err = r.RebaseInteractive(upstream)
+	err = r.RebaseInteractiveWithOptions(upstream, opts)
 	return handleRebaseResult(r, out, ontoHash, err)
 }
 
 // rebaseInteractiveAutosquashStart handles: graft rebase -i --autosquash <upstream>
-func rebaseInteractiveAutosquashStart(r *repo.Repo, out io.Writer, upstream string) error {
+func rebaseInteractiveAutosquashStart(r *repo.Repo, out io.Writer, upstream string, opts repo.InteractiveRebaseOptions) error {
 	ontoHash, err := resolveTarget(r, upstream)
 	if err != nil {
 		return err
@@ -160,7 +173,7 @@ func rebaseInteractiveAutosquashStart(r *repo.Repo, out io.Writer, upstream stri
 
 	fmt.Fprintf(out, "Interactive rebase (autosquash) onto %s... %d commit(s)\n", shortHash(ontoHash), count)
 
-	err = r.RebaseInteractiveWithAutosquash(upstream)
+	err = r.RebaseInteractiveWithAutosquashOptions(upstream, opts)
 	return handleRebaseResult(r, out, ontoHash, err)
 }
 
@@ -220,11 +233,11 @@ func rebaseOnto(r *repo.Repo, out io.Writer, newbase, upstream string, opts repo
 }
 
 // rebaseContinue handles: graft rebase --continue
-func rebaseContinue(r *repo.Repo, out io.Writer) error {
+func rebaseContinue(r *repo.Repo, out io.Writer, opts repo.RebaseOptions) error {
 	// Read onto hash from sequencer state for output.
 	ontoHash := readSequencerOnto(r)
 
-	err := r.RebaseContinue()
+	err := r.RebaseContinueWithOptions(opts)
 	return handleRebaseResult(r, out, ontoHash, err)
 }
 
@@ -275,7 +288,7 @@ func handleRebaseResult(r *repo.Repo, out io.Writer, ontoHash object.Hash, err e
 				fmt.Fprintf(out, "CONFLICT in %s. Fix conflicts and run: graft rebase --continue\n", p)
 			}
 		}
-		return nil
+		return conflictError(err, "fix conflicts and run `graft rebase --continue`")
 	}
 
 	var editErr *repo.ErrRebaseEditStop

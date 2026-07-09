@@ -16,7 +16,7 @@ func newShortlogCmd() *cobra.Command {
 		Short: "Summarise commit history by author",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			r, err := openRepo(".")
+			r, err := openRepoForCommand(cmd, ".")
 			if err != nil {
 				return err
 			}

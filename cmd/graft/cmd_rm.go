@@ -12,7 +12,7 @@ func newRmCmd() *cobra.Command {
 		Short: "Remove files from working tree and stage the deletion",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			r, err := openRepo(".")
+			r, err := openRepoForCommand(cmd, ".")
 			if err != nil {
 				return err
 			}

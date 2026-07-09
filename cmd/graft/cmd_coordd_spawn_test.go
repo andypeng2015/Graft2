@@ -1,10 +1,14 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -48,6 +52,7 @@ func TestCoorddSpawnCmd_JSONAndList(t *testing.T) {
 	if err := json.Unmarshal([]byte(output), &result); err != nil {
 		t.Fatalf("json.Unmarshal: %v\nraw: %s", err, output)
 	}
+	assertJSONSchemaVersionInOutput(t, output)
 	if result.Record == nil {
 		t.Fatal("Record = nil, want spawn record")
 	}
@@ -72,15 +77,87 @@ func TestCoorddSpawnCmd_JSONAndList(t *testing.T) {
 		return cmd.Execute()
 	})
 
-	var records []coordd.SpawnRecord
-	if err := json.Unmarshal([]byte(listOutput), &records); err != nil {
+	var listResult JSONCoorddSpawnsOutput
+	if err := json.Unmarshal([]byte(listOutput), &listResult); err != nil {
 		t.Fatalf("json.Unmarshal spawns: %v\nraw: %s", err, listOutput)
 	}
+	if listResult.SchemaVersion != JSONSchemaVersion {
+		t.Fatalf("spawns schemaVersion = %d, want %d", listResult.SchemaVersion, JSONSchemaVersion)
+	}
+	records := listResult.Spawns
 	if len(records) != 1 {
 		t.Fatalf("len(records) = %d, want 1", len(records))
 	}
 	if records[0].Name != "child-agent" {
 		t.Fatalf("records[0].Name = %q, want child-agent", records[0].Name)
+	}
+}
+
+func TestCoorddSpawnAttachUsesCommandContext(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell cancellation fixture")
+	}
+
+	dir := t.TempDir()
+	r, err := repo.Init(dir)
+	if err != nil {
+		t.Fatalf("repo.Init: %v", err)
+	}
+	if err := coordd.SaveGuardConfig(r.GraftDir, &coordd.GuardConfig{
+		Mode:             "advisory",
+		PreferredBackend: "host-direct",
+	}); err != nil {
+		t.Fatalf("SaveGuardConfig: %v", err)
+	}
+
+	result, err := coordd.AuthorizeSpawn(r, "agent-parent", coordd.SpawnRequest{
+		Name:    "canceled-attach",
+		Command: []string{"sh", "-c", "sleep 5"},
+		Runtime: "detached",
+		Launch:  "lease",
+	})
+	if err != nil {
+		t.Fatalf("AuthorizeSpawn: %v", err)
+	}
+
+	restore := chdirForTest(t, dir)
+	defer restore()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	var out bytes.Buffer
+	errCh := make(chan error, 1)
+	go func() {
+		cmd := newCoorddCmd()
+		cmd.SilenceUsage = true
+		cmd.SetContext(ctx)
+		cmd.SetOut(&out)
+		cmd.SetErr(io.Discard)
+		cmd.SetArgs([]string{"spawn-attach", "--id", result.Record.ID, "--json"})
+		errCh <- cmd.Execute()
+	}()
+
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Execute error = %v, want context.Canceled", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("coordd spawn-attach did not stop after command context cancellation")
+	}
+
+	output := out.String()
+	var record coordd.SpawnRecord
+	if err := json.Unmarshal([]byte(output), &record); err != nil {
+		t.Fatalf("json.Unmarshal attach output: %v\nraw: %s", err, output)
+	}
+	assertJSONSchemaVersionInOutput(t, output)
+	if record.ID != result.Record.ID {
+		t.Fatalf("record.ID = %q, want %q", record.ID, result.Record.ID)
+	}
+	if record.Status != "failed" {
+		t.Fatalf("record.Status = %q, want failed", record.Status)
 	}
 }
 
@@ -118,6 +195,7 @@ func TestCoorddSpawnCmd_LeaseHeartbeatAndFinish(t *testing.T) {
 	if err := json.Unmarshal([]byte(output), &result); err != nil {
 		t.Fatalf("json.Unmarshal: %v\nraw: %s", err, output)
 	}
+	assertJSONSchemaVersionInOutput(t, output)
 	if result.Record == nil {
 		t.Fatal("Record = nil, want spawn record")
 	}
@@ -145,6 +223,7 @@ func TestCoorddSpawnCmd_LeaseHeartbeatAndFinish(t *testing.T) {
 	if err := json.Unmarshal([]byte(heartbeatOutput), &heartbeat); err != nil {
 		t.Fatalf("json.Unmarshal heartbeat: %v\nraw: %s", err, heartbeatOutput)
 	}
+	assertJSONSchemaVersionInOutput(t, heartbeatOutput)
 	if heartbeat.Status != "active" {
 		t.Fatalf("heartbeat Status = %q, want active", heartbeat.Status)
 	}
@@ -160,6 +239,7 @@ func TestCoorddSpawnCmd_LeaseHeartbeatAndFinish(t *testing.T) {
 	if err := json.Unmarshal([]byte(finishOutput), &finished); err != nil {
 		t.Fatalf("json.Unmarshal finish: %v\nraw: %s", err, finishOutput)
 	}
+	assertJSONSchemaVersionInOutput(t, finishOutput)
 	if finished.Status != "completed" {
 		t.Fatalf("finished Status = %q, want completed", finished.Status)
 	}
@@ -228,6 +308,7 @@ func TestCoorddSpawnCmd_ShowAndWait(t *testing.T) {
 	if err := json.Unmarshal([]byte(showOutput), &view); err != nil {
 		t.Fatalf("json.Unmarshal show: %v\nraw: %s", err, showOutput)
 	}
+	assertJSONSchemaVersionInOutput(t, showOutput)
 	if view.Lease == nil || view.Lease.Env["GRAFT_COORD_AGENT_ID"] != result.Record.ChildAgentID {
 		t.Fatalf("missing expected lease env in view: %#v", view)
 	}
@@ -248,6 +329,7 @@ func TestCoorddSpawnCmd_ShowAndWait(t *testing.T) {
 	if err := json.Unmarshal([]byte(waitOutput), &waited); err != nil {
 		t.Fatalf("json.Unmarshal wait: %v\nraw: %s", err, waitOutput)
 	}
+	assertJSONSchemaVersionInOutput(t, waitOutput)
 	if waited.Status != "completed" {
 		t.Fatalf("waited.Status = %q, want completed", waited.Status)
 	}
@@ -292,6 +374,7 @@ func TestCoorddSpawnCmd_ConsumeAndAttachWithTask(t *testing.T) {
 	if err := json.Unmarshal([]byte(spawnOutput), &spawned); err != nil {
 		t.Fatalf("json.Unmarshal spawn: %v\nraw: %s", err, spawnOutput)
 	}
+	assertJSONSchemaVersionInOutput(t, spawnOutput)
 	if spawned.Record == nil || spawned.Record.Task == nil || spawned.Record.Task.ID != task.ID {
 		t.Fatalf("spawned.Record.Task = %#v, want bound task %q", spawned.Record.Task, task.ID)
 	}
@@ -308,6 +391,7 @@ func TestCoorddSpawnCmd_ConsumeAndAttachWithTask(t *testing.T) {
 	if err := json.Unmarshal([]byte(consumeOutput), &view); err != nil {
 		t.Fatalf("json.Unmarshal consume: %v\nraw: %s", err, consumeOutput)
 	}
+	assertJSONSchemaVersionInOutput(t, consumeOutput)
 	if view.Record == nil || view.Record.Task == nil || view.Record.Task.Status != "in_progress" {
 		t.Fatalf("view.Record.Task = %#v, want in_progress", view.Record.Task)
 	}
@@ -327,6 +411,7 @@ func TestCoorddSpawnCmd_ConsumeAndAttachWithTask(t *testing.T) {
 	if err := json.Unmarshal([]byte(attachOutput), &finished); err != nil {
 		t.Fatalf("json.Unmarshal attach: %v\nraw: %s", err, attachOutput)
 	}
+	assertJSONSchemaVersionInOutput(t, attachOutput)
 	if finished.Status != "completed" {
 		t.Fatalf("finished.Status = %q, want completed", finished.Status)
 	}
@@ -403,6 +488,7 @@ func TestCoorddSpawnCmd_Trace(t *testing.T) {
 	if err := json.Unmarshal([]byte(output), &trace); err != nil {
 		t.Fatalf("json.Unmarshal trace: %v\nraw: %s", err, output)
 	}
+	assertJSONSchemaVersionInOutput(t, output)
 	if trace.Record == nil || trace.Record.ID != result.Record.ID {
 		t.Fatalf("trace.Record = %#v, want spawn %q", trace.Record, result.Record.ID)
 	}
@@ -411,6 +497,68 @@ func TestCoorddSpawnCmd_Trace(t *testing.T) {
 	}
 	if len(trace.Phases) == 0 {
 		t.Fatal("expected trace.Phases to include grouped events")
+	}
+}
+
+func TestCoorddSpawnCmd_TraceRedactedJSON(t *testing.T) {
+	dir := t.TempDir()
+	r, err := repo.Init(dir)
+	if err != nil {
+		t.Fatalf("repo.Init: %v", err)
+	}
+	if err := coordd.SaveGuardConfig(r.GraftDir, &coordd.GuardConfig{
+		Mode:             "enforce",
+		PreferredBackend: "host-direct",
+	}); err != nil {
+		t.Fatalf("SaveGuardConfig: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(r.GraftDir, "coord"), 0o755); err != nil {
+		t.Fatalf("MkdirAll coord: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(r.GraftDir, "coord", "agent-id"), []byte("agent-parent"), 0o644); err != nil {
+		t.Fatalf("write agent-id: %v", err)
+	}
+
+	restore := chdirForTest(t, dir)
+	defer restore()
+
+	result, err := coordd.AuthorizeSpawn(r, "agent-parent", coordd.SpawnRequest{
+		Name:           "trace-redacted-child",
+		Command:        []string{"printf", "secret-token"},
+		Runtime:        "detached",
+		Launch:         "lease",
+		BootstrapCoord: true,
+	})
+	if err != nil {
+		t.Fatalf("AuthorizeSpawn: %v", err)
+	}
+
+	output := captureCommandStdout(t, func() error {
+		cmd := newCoorddCmd()
+		cmd.SilenceUsage = true
+		cmd.SetErr(io.Discard)
+		cmd.SetArgs([]string{"spawn-trace", "--id", result.Record.ID, "--json", "--redact"})
+		return cmd.Execute()
+	})
+	assertJSONSchemaVersionInOutput(t, output)
+	for _, forbidden := range []string{"secret-token", dir} {
+		if strings.Contains(output, forbidden) {
+			t.Fatalf("redacted trace leaked %q:\n%s", forbidden, output)
+		}
+	}
+
+	var trace coordd.SpawnTraceView
+	if err := json.Unmarshal([]byte(output), &trace); err != nil {
+		t.Fatalf("json.Unmarshal trace: %v\nraw: %s", err, output)
+	}
+	if trace.Redaction == nil || trace.Redaction.SecretsIncluded || trace.Redaction.CommandsIncluded || trace.Redaction.LocalPathsIncluded {
+		t.Fatalf("unexpected redaction metadata: %#v", trace.Redaction)
+	}
+	if trace.Record == nil || len(trace.Record.Command) != 0 || trace.Record.RepoRoot != "" {
+		t.Fatalf("record was not redacted: %#v", trace.Record)
+	}
+	if trace.Lease == nil || len(trace.Lease.Command) != 0 || trace.Lease.RepoRoot != "" || trace.Lease.Env["GRAFT_COORD_AGENT_ID"] != "redacted" {
+		t.Fatalf("lease was not redacted: %#v", trace.Lease)
 	}
 }
 
@@ -481,6 +629,7 @@ func TestCoorddSpawnCmd_TraceExecutionOnlyNoFallbacks(t *testing.T) {
 	if err := json.Unmarshal([]byte(output), &trace); err != nil {
 		t.Fatalf("json.Unmarshal trace: %v\nraw: %s", err, output)
 	}
+	assertJSONSchemaVersionInOutput(t, output)
 	if trace.SpawnAction != nil || trace.SpawnPolicy != nil {
 		t.Fatalf("expected authorization decisions to be filtered out: %#v %#v", trace.SpawnAction, trace.SpawnPolicy)
 	}

@@ -22,6 +22,11 @@ func newRepairCmd() *cobra.Command {
 	}
 	cmd.AddCommand(newRepairReseedCmd())
 	cmd.AddCommand(newRepairResyncGitCmd())
+	cmd.AddCommand(newRepairCheckGitShadowCmd())
+	cmd.AddCommand(newRepairClearShadowFailuresCmd())
+	cmd.AddCommand(newRepairClearStaleLocksCmd())
+	cmd.AddCommand(newRepairTransactionCmd())
+	cmd.AddCommand(newRepairMigrateConfigCmd())
 	return cmd
 }
 
@@ -168,44 +173,445 @@ func newRepairReseedCmd() *cobra.Command {
 }
 
 func newRepairResyncGitCmd() *cobra.Command {
-	return &cobra.Command{
+	var jsonFlag bool
+	cmd := &cobra.Command{
 		Use:   "resync-git",
 		Short: "Force-sync git to match graft's current state",
 		Long:  "Brings the colocated .git/ repository in sync with graft by staging all files and creating a git commit matching graft's HEAD.",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			r, err := openRepo(".")
+			r, err := openRepoForCommand(cmd, ".")
 			if err != nil {
 				return err
 			}
 			if !r.HasGitDir() {
 				return fmt.Errorf("no .git/ directory found; nothing to resync")
 			}
+			return r.WithRepositoryLock("repair-resync-git", func() error {
+				head, err := r.ResolveRef("HEAD")
+				if err != nil {
+					return fmt.Errorf("resolve graft HEAD: %w", err)
+				}
 
-			branch, _ := r.CurrentBranch()
-			if branch != "" {
-				r.GitShadowCheckout(branch)
+				r.ClearShadowFailures()
+
+				branch, _ := r.CurrentBranch()
+				if branch != "" {
+					r.GitShadowCheckout(branch)
+				}
+
+				author := r.ResolveAuthor()
+				short := string(head)
+				if len(short) > 12 {
+					short = short[:12]
+				}
+				msg := fmt.Sprintf("graft resync: match graft HEAD %s", short)
+
+				r.GitShadowSyncSnapshot(msg, author)
+				if r.HasShadowFailures() {
+					status, _ := r.GitShadowStatus()
+					if jsonFlag {
+						return writeJSON(cmd.OutOrStdout(), repairGitShadowStatusToJSON(status))
+					}
+					return fmt.Errorf("git resync failed; run graft repair check-git-shadow")
+				}
+				r.RecordGitShadowCommit(head, "resync-git")
+				status, err := r.GitShadowStatus()
+				if err != nil {
+					if jsonFlag {
+						return writeJSON(cmd.OutOrStdout(), repairGitShadowStatusToJSON(status))
+					}
+					return err
+				}
+
+				out := cmd.OutOrStdout()
+				if jsonFlag {
+					return writeJSON(cmd.OutOrStdout(), repairGitShadowStatusToJSON(status))
+				}
+				if branch != "" {
+					fmt.Fprintf(out, "git synced to graft HEAD %s on branch %s\n", short, branch)
+				} else {
+					fmt.Fprintf(out, "git synced to graft HEAD %s\n", short)
+				}
+				return nil
+			})
+		},
+	}
+	cmd.Flags().BoolVar(&jsonFlag, "json", false, "output in JSON format")
+	return cmd
+}
+
+func newRepairCheckGitShadowCmd() *cobra.Command {
+	var jsonFlag bool
+	cmd := &cobra.Command{
+		Use:   "check-git-shadow",
+		Short: "Check whether git shadow matches graft state",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			r, err := openRepoForCommand(cmd, ".")
+			if err != nil {
+				return err
 			}
-
-			author := r.ResolveAuthor()
-			head, _ := r.ResolveRef("HEAD")
-			short := string(head)
-			if len(short) > 12 {
-				short = short[:12]
+			status, err := r.GitShadowStatus()
+			if jsonFlag {
+				if writeErr := writeJSON(cmd.OutOrStdout(), repairGitShadowStatusToJSON(status)); writeErr != nil {
+					return writeErr
+				}
+				if err != nil {
+					return err
+				}
+				if status.NeedsAttention() {
+					return fmt.Errorf("git shadow needs attention: %s", status.State)
+				}
+				return nil
 			}
-			msg := fmt.Sprintf("graft resync: match graft HEAD %s", short)
-
-			r.GitShadowSyncSnapshot(msg, author)
-			r.ClearShadowFailures()
-
-			out := cmd.OutOrStdout()
-			if branch != "" {
-				fmt.Fprintf(out, "git synced to graft HEAD %s on branch %s\n", short, branch)
-			} else {
-				fmt.Fprintf(out, "git synced to graft HEAD %s\n", short)
+			printGitShadowStatus(cmd.OutOrStdout(), status)
+			if err != nil {
+				return err
+			}
+			if status.NeedsAttention() {
+				return fmt.Errorf("git shadow needs attention: %s", status.State)
 			}
 			return nil
 		},
+	}
+	cmd.Flags().BoolVar(&jsonFlag, "json", false, "output in JSON format")
+	return cmd
+}
+
+func newRepairClearShadowFailuresCmd() *cobra.Command {
+	var jsonFlag bool
+	cmd := &cobra.Command{
+		Use:   "clear-shadow-failures",
+		Short: "Clear the git shadow failure log",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			r, err := openRepoForCommand(cmd, ".")
+			if err != nil {
+				return err
+			}
+			hadFailures := r.HasShadowFailures()
+			r.ClearShadowFailures()
+			status, statusErr := r.GitShadowStatus()
+			if jsonFlag {
+				out := repairGitShadowStatusToJSON(status)
+				out.OK = statusErr == nil && !status.NeedsAttention()
+				if hadFailures && status.State == repo.GitShadowStateNoShadow {
+					out.Message = "git shadow failure log cleared"
+				}
+				if err := writeJSON(cmd.OutOrStdout(), out); err != nil {
+					return err
+				}
+				return statusErr
+			}
+			if hadFailures {
+				fmt.Fprintln(cmd.OutOrStdout(), "git shadow failure log cleared")
+			} else {
+				fmt.Fprintln(cmd.OutOrStdout(), "no git shadow failure log present")
+			}
+			return statusErr
+		},
+	}
+	cmd.Flags().BoolVar(&jsonFlag, "json", false, "output in JSON format")
+	return cmd
+}
+
+func newRepairClearStaleLocksCmd() *cobra.Command {
+	var jsonFlag bool
+	cmd := &cobra.Command{
+		Use:   "clear-stale-locks",
+		Short: "Clear stale graft operation locks",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			r, err := openRepoForCommand(cmd, ".")
+			if err != nil {
+				return err
+			}
+			status, cleared, err := r.ClearStaleRepositoryLock()
+			out := repairLockStatusToJSON(status, cleared)
+			if err != nil {
+				out.OK = false
+				out.Message = err.Error()
+				if jsonFlag {
+					if writeErr := writeJSON(cmd.OutOrStdout(), out); writeErr != nil {
+						return writeErr
+					}
+					return err
+				}
+				return err
+			}
+			if jsonFlag {
+				if writeErr := writeJSON(cmd.OutOrStdout(), out); writeErr != nil {
+					return writeErr
+				}
+				if status.Exists && !status.Stale {
+					return fmt.Errorf("repository lock is active: %s", status.Path)
+				}
+				return nil
+			}
+			switch {
+			case cleared:
+				fmt.Fprintf(cmd.OutOrStdout(), "cleared stale repository lock: %s\n", status.Path)
+			case status.Exists && !status.Stale:
+				printRepositoryLockStatus(cmd.OutOrStdout(), status)
+				return fmt.Errorf("repository lock is active; not clearing")
+			default:
+				fmt.Fprintln(cmd.OutOrStdout(), "no stale repository lock present")
+			}
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&jsonFlag, "json", false, "output in JSON format")
+	return cmd
+}
+
+func newRepairTransactionCmd() *cobra.Command {
+	var jsonFlag bool
+	var markRolledBack bool
+	var markCommitted bool
+	var reason string
+	cmd := &cobra.Command{
+		Use:   "transaction <id>",
+		Short: "Inspect or mark a graft transaction record",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if markRolledBack && markCommitted {
+				return fmt.Errorf("choose only one of --mark-rolled-back or --mark-committed")
+			}
+			r, err := openRepoForCommand(cmd, ".")
+			if err != nil {
+				return err
+			}
+
+			var rec *repo.TransactionRecord
+			switch {
+			case markRolledBack:
+				rec, err = r.MarkTransactionRolledBack(args[0], reason)
+			case markCommitted:
+				rec, err = r.MarkTransactionCommitted(args[0], reason)
+			default:
+				rec, err = r.ReadTransaction(args[0])
+			}
+			if err != nil {
+				return err
+			}
+
+			out := repairTransactionToJSON(rec)
+			if markRolledBack || markCommitted {
+				out.Message = "transaction status updated"
+			}
+			if jsonFlag {
+				return writeJSON(cmd.OutOrStdout(), out)
+			}
+			printTransactionRecord(cmd.OutOrStdout(), rec)
+			if out.Repair != "" {
+				fmt.Fprintf(cmd.OutOrStdout(), "repair: %s\n", out.Repair)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&jsonFlag, "json", false, "output in JSON format")
+	cmd.Flags().BoolVar(&markRolledBack, "mark-rolled-back", false, "mark the transaction rolled back after manual verification")
+	cmd.Flags().BoolVar(&markCommitted, "mark-committed", false, "mark the transaction committed after manual verification")
+	cmd.Flags().StringVar(&reason, "reason", "", "audit note to write into the transaction record")
+	return cmd
+}
+
+func newRepairMigrateConfigCmd() *cobra.Command {
+	var jsonFlag bool
+	cmd := &cobra.Command{
+		Use:   "migrate-config",
+		Short: "Create missing repository format metadata for a legacy repo",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			r, err := openRepoForCommand(cmd, ".")
+			if err != nil {
+				return err
+			}
+			result, err := r.MigrateRepositoryConfig()
+			if err != nil {
+				return err
+			}
+			out := repairMigrateConfigToJSON(result)
+			if jsonFlag {
+				return writeJSON(cmd.OutOrStdout(), out)
+			}
+			if result.Migrated {
+				fmt.Fprintf(cmd.OutOrStdout(), "created repository config: %s\n", result.Path)
+			} else {
+				fmt.Fprintf(cmd.OutOrStdout(), "repository config already at format %d: %s\n", result.ToVersion, result.Path)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&jsonFlag, "json", false, "output in JSON format")
+	return cmd
+}
+
+func repairGitShadowStatusToJSON(status repo.GitShadowStatus) JSONRepairGitShadowOutput {
+	out := JSONRepairGitShadowOutput{
+		OK:                !status.NeedsAttention(),
+		State:             status.State,
+		Message:           status.Message,
+		HasGitDir:         status.HasGitDir,
+		HasFailures:       status.HasFailures,
+		GraftHead:         string(status.GraftHead),
+		ExpectedGitCommit: status.ExpectedGitCommit,
+		ExpectedGitTree:   status.ExpectedGitTree,
+		ActualGitCommit:   status.ActualGitCommit,
+		ActualGitTree:     status.ActualGitTree,
+	}
+	out.Repair = gitShadowRepairCommand(status)
+	return out
+}
+
+func repairLockStatusToJSON(status repo.RepositoryLockStatus, cleared bool) JSONRepairLockOutput {
+	out := JSONRepairLockOutput{
+		OK:        true,
+		State:     "no_lock",
+		Path:      status.Path,
+		Operation: status.Info.Operation,
+		PID:       status.Info.PID,
+		Hostname:  status.Info.Hostname,
+		Command:   status.Info.Command,
+		StartedAt: status.Info.StartedAt,
+		Stale:     status.Stale,
+		Cleared:   cleared,
+	}
+	switch {
+	case cleared:
+		out.State = "cleared"
+		out.Message = "stale repository lock cleared"
+	case status.Exists && status.Stale:
+		out.State = "stale"
+		out.Message = status.Reason
+		out.OK = false
+		out.Repair = "graft repair clear-stale-locks"
+	case status.Exists:
+		out.State = "active"
+		out.Message = "repository lock is active"
+		out.OK = false
+	default:
+		out.Message = "no repository lock present"
+	}
+	return out
+}
+
+func repairTransactionToJSON(rec *repo.TransactionRecord) JSONRepairTransactionOutput {
+	if rec == nil {
+		return JSONRepairTransactionOutput{OK: false, Message: "transaction not found"}
+	}
+	out := JSONRepairTransactionOutput{
+		OK:           !transactionStatusNeedsRepair(rec.Status),
+		ID:           rec.ID,
+		Operation:    rec.Operation,
+		Status:       rec.Status,
+		StartedAt:    rec.StartedAt,
+		UpdatedAt:    rec.UpdatedAt,
+		Error:        rec.Error,
+		TouchedFiles: append([]string(nil), rec.TouchedFiles...),
+	}
+	for _, ref := range rec.TouchedRefs {
+		out.TouchedRefs = append(out.TouchedRefs, JSONTransactionRefMutation{
+			Ref:     ref.Ref,
+			OldHash: string(ref.OldHash),
+			NewHash: string(ref.NewHash),
+		})
+	}
+	if !out.OK {
+		out.Repair = "graft repair transaction " + rec.ID + " --mark-rolled-back --reason <note>"
+	}
+	return out
+}
+
+func repairMigrateConfigToJSON(result *repo.RepositoryConfigMigrationResult) JSONRepairMigrateConfigOutput {
+	if result == nil {
+		return JSONRepairMigrateConfigOutput{OK: false, Message: "migration result unavailable"}
+	}
+	out := JSONRepairMigrateConfigOutput{
+		OK:          true,
+		Migrated:    result.Migrated,
+		Path:        result.Path,
+		FromVersion: result.FromVersion,
+		ToVersion:   result.ToVersion,
+	}
+	if result.Migrated {
+		out.Message = "repository config created"
+	} else {
+		out.Message = "repository config already current"
+	}
+	return out
+}
+
+func transactionStatusNeedsRepair(status string) bool {
+	switch status {
+	case repo.TransactionStatusStarted, repo.TransactionStatusPrepared, repo.TransactionStatusNeedsRepair:
+		return true
+	default:
+		return false
+	}
+}
+
+func printTransactionRecord(out io.Writer, rec *repo.TransactionRecord) {
+	if rec == nil {
+		fmt.Fprintln(out, "transaction: not found")
+		return
+	}
+	fmt.Fprintf(out, "transaction: %s\n", rec.ID)
+	fmt.Fprintf(out, "operation: %s\n", rec.Operation)
+	fmt.Fprintf(out, "status: %s\n", rec.Status)
+	fmt.Fprintf(out, "started: %s\n", rec.StartedAt)
+	fmt.Fprintf(out, "updated: %s\n", rec.UpdatedAt)
+	if rec.Error != "" {
+		fmt.Fprintf(out, "error: %s\n", rec.Error)
+	}
+	if len(rec.TouchedRefs) > 0 {
+		fmt.Fprintln(out, "refs:")
+		for _, ref := range rec.TouchedRefs {
+			fmt.Fprintf(out, "  %s %s -> %s\n", ref.Ref, ref.OldHash, ref.NewHash)
+		}
+	}
+	if len(rec.TouchedFiles) > 0 {
+		fmt.Fprintln(out, "files:")
+		for _, path := range rec.TouchedFiles {
+			fmt.Fprintf(out, "  %s\n", path)
+		}
+	}
+}
+
+func printRepositoryLockStatus(out io.Writer, status repo.RepositoryLockStatus) {
+	fmt.Fprintf(out, "repository lock: %s\n", status.Path)
+	fmt.Fprintf(out, "operation: %s\n", status.Info.Operation)
+	fmt.Fprintf(out, "pid: %d\n", status.Info.PID)
+	fmt.Fprintf(out, "hostname: %s\n", status.Info.Hostname)
+	fmt.Fprintf(out, "started: %s\n", status.Info.StartedAt)
+	if status.Info.Command != "" {
+		fmt.Fprintf(out, "command: %s\n", status.Info.Command)
+	}
+}
+
+func printGitShadowStatus(out io.Writer, status repo.GitShadowStatus) {
+	fmt.Fprintf(out, "git shadow: %s\n", status.State)
+	if status.Message != "" {
+		fmt.Fprintf(out, "%s\n", status.Message)
+	}
+	if status.GraftHead != "" {
+		fmt.Fprintf(out, "graft HEAD: %s\n", status.GraftHead)
+	}
+	if status.ExpectedGitCommit != "" {
+		fmt.Fprintf(out, "expected git commit: %s\n", status.ExpectedGitCommit)
+	}
+	if status.ActualGitCommit != "" {
+		fmt.Fprintf(out, "actual git commit: %s\n", status.ActualGitCommit)
+	}
+	if status.ExpectedGitTree != "" {
+		fmt.Fprintf(out, "expected git tree: %s\n", status.ExpectedGitTree)
+	}
+	if status.ActualGitTree != "" {
+		fmt.Fprintf(out, "actual git tree: %s\n", status.ActualGitTree)
+	}
+	if repair := gitShadowRepairCommand(status); repair != "" {
+		fmt.Fprintf(out, "repair: %s\n", repair)
 	}
 }
 

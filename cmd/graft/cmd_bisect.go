@@ -34,7 +34,7 @@ func newBisectStartCmd() *cobra.Command {
 		Short: "Start a bisect session",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			r, err := openRepo(".")
+			r, err := openRepoForCommand(cmd, ".")
 			if err != nil {
 				return err
 			}
@@ -65,7 +65,7 @@ func newBisectGoodCmd() *cobra.Command {
 		Short: "Mark current commit as good",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			r, err := openRepo(".")
+			r, err := openRepoForCommand(cmd, ".")
 			if err != nil {
 				return err
 			}
@@ -87,7 +87,7 @@ func newBisectBadCmd() *cobra.Command {
 		Short: "Mark current commit as bad",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			r, err := openRepo(".")
+			r, err := openRepoForCommand(cmd, ".")
 			if err != nil {
 				return err
 			}
@@ -109,7 +109,7 @@ func newBisectSkipCmd() *cobra.Command {
 		Short: "Skip the current commit",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			r, err := openRepo(".")
+			r, err := openRepoForCommand(cmd, ".")
 			if err != nil {
 				return err
 			}
@@ -139,7 +139,7 @@ func newBisectResetCmd() *cobra.Command {
 		Short: "End bisect session and restore original ref",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			r, err := openRepo(".")
+			r, err := openRepoForCommand(cmd, ".")
 			if err != nil {
 				return err
 			}
@@ -163,7 +163,7 @@ func newBisectLogCmd() *cobra.Command {
 		Short: "Print bisect log",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			r, err := openRepo(".")
+			r, err := openRepoForCommand(cmd, ".")
 			if err != nil {
 				return err
 			}
@@ -190,7 +190,7 @@ func newBisectRunCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			script := args[0]
 
-			r, err := openRepo(".")
+			r, err := openRepoForCommand(cmd, ".")
 			if err != nil {
 				return err
 			}

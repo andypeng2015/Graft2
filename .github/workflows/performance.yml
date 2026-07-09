@@ -1,0 +1,77 @@
+name: Performance Fixtures
+
+on:
+  schedule:
+    - cron: '0 8 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  scale-fixtures:
+    name: ${{ matrix.profile }} fixture
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ matrix.timeout }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - profile: large
+            timeout: 240
+          - profile: monorepo
+            timeout: 180
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
+
+      - name: Configure git
+        run: |
+          git config --global init.defaultBranch main
+          git config --global user.name "CI"
+          git config --global user.email "ci@test"
+
+      - name: Build graft
+        run: go build -o "$RUNNER_TEMP/graft" ./cmd/graft
+
+      - name: Generate fixture
+        run: |
+          fixture="$RUNNER_TEMP/fixtures/${{ matrix.profile }}"
+          scripts/generate-bench-fixture.sh "${{ matrix.profile }}" "$fixture"
+          mkdir -p "$RUNNER_TEMP/performance/${{ matrix.profile }}"
+          cp "$fixture/metadata.json" "$RUNNER_TEMP/performance/${{ matrix.profile }}/fixture-metadata.json"
+          cp "$fixture/commands.txt" "$RUNNER_TEMP/performance/${{ matrix.profile }}/fixture-commands.txt"
+
+      - name: Run fixture checks
+        run: |
+          fixture="$RUNNER_TEMP/fixtures/${{ matrix.profile }}"
+          out="$RUNNER_TEMP/performance/${{ matrix.profile }}"
+          "$RUNNER_TEMP/graft" init "$fixture"
+          (
+            cd "$fixture"
+            /usr/bin/time -v "$RUNNER_TEMP/graft" status > "$out/status-before.txt" 2> "$out/status-before.time.txt"
+            /usr/bin/time -v "$RUNNER_TEMP/graft" add . > "$out/add.txt" 2> "$out/add.time.txt"
+            /usr/bin/time -v "$RUNNER_TEMP/graft" commit -m "benchmark fixture baseline" --author "Benchmark <bench@example.com>" > "$out/commit.txt" 2> "$out/commit.time.txt"
+            /usr/bin/time -v "$RUNNER_TEMP/graft" status > "$out/status-after.txt" 2> "$out/status-after.time.txt"
+          )
+          go run ./scripts/time-summary "$out"/*.time.txt > "$out/timings.json"
+
+      - name: Run package benchmark artifacts
+        env:
+          GRAFT_BENCH_COUNT: "3"
+          GRAFT_BENCH_GOMAXPROCS: "1"
+          GRAFT_BENCH_TIME: "1s"
+        run: |
+          scripts/bench-artifacts.sh "$RUNNER_TEMP/performance/${{ matrix.profile }}/bench"
+
+      - name: Upload performance artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: graft-performance-${{ matrix.profile }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/performance/${{ matrix.profile }}

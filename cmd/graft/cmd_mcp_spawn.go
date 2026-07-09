@@ -268,19 +268,19 @@ func mcpToolSpawn(args map[string]any) (any, error) {
 	if spawnErr != nil {
 		var exitCoder interface{ ExitCode() int }
 		if errors.As(spawnErr, &exitCoder) {
-			return map[string]any{
-				"status":    "blocked",
-				"result":    result,
-				"exit_code": exitCoder.ExitCode(),
-				"error":     spawnErr.Error(),
-			}, nil
+			out := coorddSpawnResultToJSON(result)
+			out.SchemaVersion = JSONSchemaVersion
+			out.Status = "blocked"
+			out.ExitCode = exitCoder.ExitCode()
+			out.Error = spawnErr.Error()
+			return out, nil
 		}
 		return nil, spawnErr
 	}
-	return map[string]any{
-		"status": spawnStatusLabel(launchMode),
-		"result": result,
-	}, nil
+	out := coorddSpawnResultToJSON(result)
+	out.SchemaVersion = JSONSchemaVersion
+	out.Status = spawnStatusLabel(launchMode)
+	return out, nil
 }
 
 func mcpToolSpawnConsume(args map[string]any) (any, error) {
@@ -292,7 +292,13 @@ func mcpToolSpawnConsume(args map[string]any) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	return coordd.ConsumeSpawn(r.GraftDir, id, strings.TrimSpace(mcpArgString(args, "child_agent_id")))
+	view, err := coordd.ConsumeSpawn(r.GraftDir, id, strings.TrimSpace(mcpArgString(args, "child_agent_id")))
+	if err != nil {
+		return nil, err
+	}
+	out := coorddSpawnViewToJSON(view)
+	out.SchemaVersion = JSONSchemaVersion
+	return out, nil
 }
 
 func mcpToolSpawnTrace(args map[string]any) (any, error) {
@@ -312,14 +318,19 @@ func mcpToolSpawnTrace(args map[string]any) (any, error) {
 		return nil, fmt.Errorf("spawn %q not found", id)
 	}
 	if strings.EqualFold(strings.TrimSpace(mcpArgString(args, "view")), "raw") {
-		return trace, nil
+		out := coorddSpawnTraceRawToJSON(trace)
+		out.SchemaVersion = JSONSchemaVersion
+		return out, nil
 	}
-	return coordd.BuildSpawnTraceView(trace, coordd.SpawnTraceViewOptions{
+	view := coordd.BuildSpawnTraceView(trace, coordd.SpawnTraceViewOptions{
 		MatchedOnly:        mcpArgBoolDefault(args, "matched_only", true),
 		CollapseHeartbeats: mcpArgBoolDefault(args, "collapse_heartbeats", true),
 		Phases:             mcpArgStringSlice(args, "phases"),
 		NoDefaultFallbacks: mcpArgBool(args, "no_default_fallbacks"),
-	}), nil
+	})
+	out := coorddSpawnTraceViewToJSON(view)
+	out.SchemaVersion = JSONSchemaVersion
+	return out, nil
 }
 
 func mcpToolSpawnGet(args map[string]any) (any, error) {
@@ -338,7 +349,9 @@ func mcpToolSpawnGet(args map[string]any) (any, error) {
 	if view == nil {
 		return nil, fmt.Errorf("spawn %q not found", id)
 	}
-	return view, nil
+	out := coorddSpawnViewToJSON(view)
+	out.SchemaVersion = JSONSchemaVersion
+	return out, nil
 }
 
 func mcpToolSpawnHeartbeat(args map[string]any) (any, error) {
@@ -350,7 +363,13 @@ func mcpToolSpawnHeartbeat(args map[string]any) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	return coordd.TouchSpawn(r.GraftDir, id, strings.TrimSpace(mcpArgString(args, "child_agent_id")))
+	record, err := coordd.TouchSpawn(r.GraftDir, id, strings.TrimSpace(mcpArgString(args, "child_agent_id")))
+	if err != nil {
+		return nil, err
+	}
+	out := coorddSpawnRecordToJSON(record)
+	out.SchemaVersion = JSONSchemaVersion
+	return out, nil
 }
 
 func mcpToolSpawnFinish(args map[string]any) (any, error) {
@@ -362,7 +381,13 @@ func mcpToolSpawnFinish(args map[string]any) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	return coordd.FinishSpawn(r.GraftDir, id, strings.TrimSpace(mcpArgString(args, "status")), strings.TrimSpace(mcpArgString(args, "child_agent_id")))
+	record, err := coordd.FinishSpawn(r.GraftDir, id, strings.TrimSpace(mcpArgString(args, "status")), strings.TrimSpace(mcpArgString(args, "child_agent_id")))
+	if err != nil {
+		return nil, err
+	}
+	out := coorddSpawnRecordToJSON(record)
+	out.SchemaVersion = JSONSchemaVersion
+	return out, nil
 }
 
 func mcpToolSpawnWait(args map[string]any) (any, error) {
@@ -380,7 +405,13 @@ func mcpToolSpawnWait(args map[string]any) (any, error) {
 			timeout = time.Duration(parsed) * time.Millisecond
 		}
 	}
-	return coordd.WaitSpawn(r.GraftDir, id, timeout, 200*time.Millisecond)
+	record, err := coordd.WaitSpawn(r.GraftDir, id, timeout, 200*time.Millisecond)
+	if err != nil {
+		return nil, err
+	}
+	out := coorddSpawnRecordToJSON(record)
+	out.SchemaVersion = JSONSchemaVersion
+	return out, nil
 }
 
 func mcpToolSpawns(_ map[string]any) (any, error) {
@@ -388,7 +419,11 @@ func mcpToolSpawns(_ map[string]any) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	return coordd.ListSpawnRecords(r.GraftDir)
+	records, err := coordd.ListSpawnRecords(r.GraftDir)
+	if err != nil {
+		return nil, err
+	}
+	return JSONCoorddSpawnsOutput{SchemaVersion: JSONSchemaVersion, Spawns: records}, nil
 }
 
 func spawnStatusLabel(launchMode string) string {

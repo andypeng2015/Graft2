@@ -63,6 +63,24 @@ jobs:
       - name: Run tests with race detector
         run: go test -race ./...
 
+  fuzz-smoke:
+    name: Fuzz smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Run tier-1 entity reconstruction fuzz smoke
+        run: go test -run=^$ -fuzz=FuzzExtractReconstructTier1 -fuzztime=20s ./pkg/entity
+
   lint:
     name: Lint
     runs-on: ubuntu-latest

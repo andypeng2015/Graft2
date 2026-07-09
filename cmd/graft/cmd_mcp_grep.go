@@ -119,11 +119,11 @@ func mcpToolGrep(args map[string]any) (any, error) {
 		matches = append(matches, m)
 	}
 
-	return map[string]any{
+	return mcpVersionedMap(map[string]any{
 		"pattern": pattern,
 		"count":   len(matches),
 		"matches": matches,
-	}, nil
+	}), nil
 }
 
 type grepReplaceEdit struct {
@@ -258,14 +258,14 @@ func mcpToolGrepReplace(args map[string]any) (any, error) {
 		return nil, fmt.Errorf("grep replace: %w", err)
 	}
 
-	return map[string]any{
+	return mcpVersionedMap(map[string]any{
 		"pattern":     pattern,
 		"replacement": replacement,
 		"applied":     apply,
 		"files":       len(files),
 		"total_edits": totalEdits,
 		"results":     files,
-	}, nil
+	}), nil
 }
 
 // applyEdits applies byte-range edits to source in reverse order to preserve offsets.
@@ -419,7 +419,7 @@ func mcpToolEntityEdit(args map[string]any) (any, error) {
 		return nil, fmt.Errorf("write file: %w", err)
 	}
 
-	return map[string]any{
+	return mcpVersionedMap(map[string]any{
 		"status":     "ok",
 		"file":       file,
 		"operation":  operation,
@@ -432,5 +432,5 @@ func mcpToolEntityEdit(args map[string]any) (any, error) {
 			"end_line":   target.EndLine,
 			"index":      targetIdx,
 		},
-	}, nil
+	}), nil
 }

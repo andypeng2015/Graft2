@@ -126,12 +126,7 @@ func mcpToolPlanCreate(args map[string]any) (any, error) {
 		return nil, fmt.Errorf("create plan: %w", err)
 	}
 
-	return map[string]any{
-		"status": "created",
-		"id":     plan.ID,
-		"title":  plan.Title,
-		"steps":  len(plan.Steps),
-	}, nil
+	return JSONCoordPlanOutput{SchemaVersion: JSONSchemaVersion, Plan: plan}, nil
 }
 
 func mcpToolPlanList(args map[string]any) (any, error) {
@@ -147,47 +142,18 @@ func mcpToolPlanList(args map[string]any) (any, error) {
 
 	statusFilter := mcpArgString(args, "status")
 
-	type planSummary struct {
-		ID        string `json:"id"`
-		Title     string `json:"title"`
-		Status    string `json:"status"`
-		Author    string `json:"author,omitempty"`
-		Steps     int    `json:"steps"`
-		Completed int    `json:"completed"`
-		CreatedAt string `json:"created_at"`
-		UpdatedAt string `json:"updated_at"`
-	}
-
-	var summaries []planSummary
+	var filtered []*coord.Plan
 	for _, p := range plans {
 		if statusFilter != "" && p.Status != statusFilter {
 			continue
 		}
-		completed := 0
-		for _, s := range p.Steps {
-			if s.Status == "completed" {
-				completed++
-			}
-		}
-		summaries = append(summaries, planSummary{
-			ID:        p.ID,
-			Title:     p.Title,
-			Status:    p.Status,
-			Author:    p.Author,
-			Steps:     len(p.Steps),
-			Completed: completed,
-			CreatedAt: p.CreatedAt.Format("2006-01-02T15:04:05Z"),
-			UpdatedAt: p.UpdatedAt.Format("2006-01-02T15:04:05Z"),
-		})
+		filtered = append(filtered, p)
 	}
-	if summaries == nil {
-		summaries = []planSummary{}
+	if filtered == nil {
+		filtered = []*coord.Plan{}
 	}
 
-	return map[string]any{
-		"count": len(summaries),
-		"plans": summaries,
-	}, nil
+	return JSONCoordPlansOutput{SchemaVersion: JSONSchemaVersion, Plans: filtered}, nil
 }
 
 func mcpToolPlanGet(args map[string]any) (any, error) {
@@ -205,7 +171,7 @@ func mcpToolPlanGet(args map[string]any) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	return plan, nil
+	return JSONCoordPlanOutput{SchemaVersion: JSONSchemaVersion, Plan: plan}, nil
 }
 
 func mcpToolPlanUpdate(args map[string]any) (any, error) {
@@ -260,12 +226,7 @@ func mcpToolPlanUpdate(args map[string]any) (any, error) {
 		return nil, fmt.Errorf("update plan: %w", err)
 	}
 
-	return map[string]any{
-		"status":      "updated",
-		"id":          plan.ID,
-		"title":       plan.Title,
-		"plan_status": plan.Status,
-	}, nil
+	return JSONCoordPlanOutput{SchemaVersion: JSONSchemaVersion, Plan: plan}, nil
 }
 
 func mcpToolPlanDelete(args map[string]any) (any, error) {
@@ -283,8 +244,5 @@ func mcpToolPlanDelete(args map[string]any) (any, error) {
 		return nil, err
 	}
 
-	return map[string]any{
-		"status": "deleted",
-		"id":     id,
-	}, nil
+	return JSONCoordPlanDeleteOutput{SchemaVersion: JSONSchemaVersion, Status: "deleted", ID: id}, nil
 }

@@ -3,6 +3,8 @@
 /graft
 /graft.test
 *.test
+bench_out/
+bench_fixtures/
 
 # Private working notes
 .claude/

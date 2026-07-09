@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"strconv"
 
 	"github.com/odvcencio/graft/pkg/repo"
 	"github.com/odvcencio/graft/pkg/userconfig"
@@ -20,12 +21,28 @@ func newConfigCmd() *cobra.Command {
 Without --global, values are stored in the repository config (.graft/config.json).
 With --global, values are stored in the user config (~/.graftconfig).
 
-Supported keys: user.name, user.email
+Supported repository keys: user.name, user.email, hooks.trusted
+Supported global keys: user.name, user.email, orchard.url, orchard.username, orchard.owner, signing.key, signing.auto
+
+Hook trust:
+  Repositories created with graft init trust repo-provided hooks by default.
+  Cloned or imported repositories mark repo-provided hooks untrusted, so
+  executable .graft/hooks/* scripts and repo hooks.toml entries are skipped
+  until acknowledged with:
+
+    graft config hooks.trusted true
+
+  Disable repo-provided hooks again with:
+
+    graft config hooks.trusted false
 
 Examples:
   graft config user.name "Alice"
   graft config user.email "alice@example.com"
+  graft config hooks.trusted true
   graft config --global user.name "Alice"
+  graft config --global orchard.url https://orchard.dev
+  graft config --global signing.auto true
   graft config user.name
   graft config --list`,
 		Args: cobra.MaximumNArgs(2),
@@ -55,7 +72,7 @@ func configSet(cmd *cobra.Command, key, value string, global bool) error {
 	if global {
 		return configSetGlobal(key, value)
 	}
-	return configSetRepo(key, value)
+	return configSetRepo(cmd, key, value)
 }
 
 func configSetGlobal(key, value string) error {
@@ -69,10 +86,17 @@ func configSetGlobal(key, value string) error {
 	return userconfig.Save(cfg)
 }
 
-func configSetRepo(key, value string) error {
-	r, err := openRepo(".")
+func configSetRepo(cmd *cobra.Command, key, value string) error {
+	r, err := openRepoForCommand(cmd, ".")
 	if err != nil {
 		return err
+	}
+	if key == "hooks.trusted" {
+		trusted, err := strconv.ParseBool(value)
+		if err != nil {
+			return fmt.Errorf("invalid hooks.trusted value %q: expected true or false", value)
+		}
+		return r.SetHooksTrusted(trusted)
 	}
 	cfg, err := r.ReadConfig()
 	if err != nil {
@@ -91,6 +115,20 @@ func applyUserConfigKey(cfg *userconfig.Config, key, value string) error {
 		cfg.Name = value
 	case "user.email":
 		cfg.Email = value
+	case "orchard.url":
+		cfg.OrchardURL = value
+	case "orchard.username":
+		cfg.Username = value
+	case "orchard.owner":
+		cfg.Owner = value
+	case "signing.key":
+		cfg.SigningKeyPath = value
+	case "signing.auto":
+		autoSign, err := strconv.ParseBool(value)
+		if err != nil {
+			return fmt.Errorf("invalid signing.auto value %q: expected true or false", value)
+		}
+		cfg.AutoSign = autoSign
 	default:
 		return fmt.Errorf("unknown config key: %s", key)
 	}
@@ -110,6 +148,15 @@ func applyRepoConfigKey(cfg *repo.Config, key, value string) error {
 			cfg.User = &repo.UserConfig{}
 		}
 		cfg.User.Email = value
+	case "hooks.trusted":
+		trusted, err := strconv.ParseBool(value)
+		if err != nil {
+			return fmt.Errorf("invalid hooks.trusted value %q: expected true or false", value)
+		}
+		if cfg.Hooks == nil {
+			cfg.Hooks = &repo.HookSecurityConfig{}
+		}
+		cfg.Hooks.Trusted = trusted
 	default:
 		return fmt.Errorf("unknown config key: %s", key)
 	}
@@ -140,7 +187,7 @@ func configGetGlobal(cmd *cobra.Command, key string) error {
 }
 
 func configGetWithFallback(cmd *cobra.Command, key string) error {
-	r, err := openRepo(".")
+	r, err := openRepoForCommand(cmd, ".")
 	if err != nil {
 		return err
 	}
@@ -178,6 +225,16 @@ func readUserConfigKey(cfg *userconfig.Config, key string) (string, error) {
 		return cfg.Name, nil
 	case "user.email":
 		return cfg.Email, nil
+	case "orchard.url":
+		return cfg.DefaultOrchardURL(), nil
+	case "orchard.username":
+		return cfg.Username, nil
+	case "orchard.owner":
+		return cfg.Owner, nil
+	case "signing.key":
+		return cfg.SigningKeyPath, nil
+	case "signing.auto":
+		return strconv.FormatBool(cfg.AutoSign), nil
 	default:
 		return "", fmt.Errorf("unknown config key: %s", key)
 	}
@@ -196,6 +253,8 @@ func readRepoConfigKey(cfg *repo.Config, key string) (string, error) {
 			return cfg.User.Email, nil
 		}
 		return "", nil
+	case "hooks.trusted":
+		return strconv.FormatBool(cfg.Hooks != nil && cfg.Hooks.Trusted), nil
 	default:
 		return "", fmt.Errorf("unknown config key: %s", key)
 	}
@@ -213,7 +272,7 @@ func configList(cmd *cobra.Command, global bool) error {
 		lines = formatUserConfig(cfg)
 	} else {
 		// Show repo config, then global config for completeness.
-		r, err := openRepo(".")
+		r, err := openRepoForCommand(cmd, ".")
 		if err != nil {
 			return err
 		}
@@ -309,6 +368,7 @@ func formatRepoConfig(cfg *repo.Config) []string {
 			lines = append(lines, "user.email="+cfg.User.Email)
 		}
 	}
+	lines = append(lines, "hooks.trusted="+strconv.FormatBool(cfg.Hooks != nil && cfg.Hooks.Trusted))
 	for name, url := range cfg.Remotes {
 		lines = append(lines, "remote."+name+".url="+url)
 	}

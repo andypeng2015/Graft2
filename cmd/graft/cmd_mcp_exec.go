@@ -78,13 +78,14 @@ func mcpToolExec(args map[string]any) (any, error) {
 	}
 	_ = coordd.RecordPreflightDecision(r.GraftDir, input, decision)
 
-	result := map[string]any{
-		"input":    input,
-		"decision": decision,
-		"allowed":  decision.Action != "HardBlock",
+	result := JSONMCPExecOutput{
+		SchemaVersion: JSONSchemaVersion,
+		Input:         input,
+		Decision:      decision,
+		Allowed:       decision.Action != "HardBlock",
 	}
 	if mcpArgBool(args, "check_only") {
-		result["status"] = "preflight"
+		result.Status = "preflight"
 		return result, nil
 	}
 
@@ -100,27 +101,27 @@ func mcpToolExec(args map[string]any) (any, error) {
 		execResult = &coordd.ExecResult{Decision: decision}
 	}
 
-	result["exec"] = execResult
-	result["stdout"] = stdoutBuf.String()
-	result["stderr"] = stderrBuf.String()
+	result.Exec = execResult
+	result.Stdout = stdoutBuf.String()
+	result.Stderr = stderrBuf.String()
 
 	if execErr != nil {
 		var exitCoder interface{ ExitCode() int }
 		if errors.As(execErr, &exitCoder) {
-			result["exit_code"] = exitCoder.ExitCode()
-			result["error"] = execErr.Error()
+			result.ExitCode = exitCoder.ExitCode()
+			result.Error = execErr.Error()
 			if decision.Action == "HardBlock" {
-				result["status"] = "blocked"
+				result.Status = "blocked"
 			} else {
-				result["status"] = "failed"
+				result.Status = "failed"
 			}
 			return result, nil
 		}
 		return nil, execErr
 	}
 
-	result["exit_code"] = execResult.ExitCode
-	result["status"] = "completed"
+	result.ExitCode = execResult.ExitCode
+	result.Status = "completed"
 	return result, nil
 }
 

@@ -69,6 +69,9 @@ func bootstrapGotFromGit(ctx context.Context, dest, remoteName, remoteURL string
 	if err := r.SetRemote(remoteName, remoteURL); err != nil {
 		return err
 	}
+	if err := markClonedHooksUntrusted(r); err != nil {
+		return err
+	}
 
 	tracked, err := gitTrackedFiles(ctx, dest)
 	if err != nil {

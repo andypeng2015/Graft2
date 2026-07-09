@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"os"
 	"sort"
 	"strings"
 
@@ -73,7 +72,7 @@ ignored in structural mode.`,
 				}
 			}
 
-			r, err := openRepo(".")
+			r, err := openRepoForCommand(cmd, ".")
 			if err != nil {
 				return err
 			}
@@ -173,23 +172,15 @@ func runLineGrep(cmd *cobra.Command, r *repo.Repo, args []string, caseInsensitiv
 	out := cmd.OutOrStdout()
 
 	if jsonOutput {
-		type JSONGrepResult struct {
-			Path    string `json:"path"`
-			Line    int    `json:"line"`
-			Content string `json:"content"`
-		}
-		type JSONGrepOutput struct {
-			Results []JSONGrepResult `json:"results"`
-		}
-		jsonResults := make([]JSONGrepResult, len(results))
+		jsonResults := make([]JSONLineGrepResult, len(results))
 		for i, res := range results {
-			jsonResults[i] = JSONGrepResult{
+			jsonResults[i] = JSONLineGrepResult{
 				Path:    res.Path,
 				Line:    res.Line,
 				Content: res.Content,
 			}
 		}
-		return writeJSON(out, JSONGrepOutput{Results: jsonResults})
+		return writeJSON(out, JSONLineGrepOutput{Results: jsonResults})
 	}
 
 	for _, res := range results {
@@ -208,6 +199,7 @@ func runStructuralGrep(cmd *cobra.Command, r *repo.Repo, args []string, forceStr
 	pattern := args[0]
 
 	opts := repo.StructuralGrepOptions{
+		Context: cmd.Context(),
 		Pattern: pattern,
 		SExp:    sexp,
 		Rewrite: rewrite,
@@ -226,7 +218,7 @@ func runStructuralGrep(cmd *cobra.Command, r *repo.Repo, args []string, forceStr
 		// If the pattern has no metavariables, fall back to line grep
 		// with a warning.
 		if !hasMetavariables(pattern) {
-			fmt.Fprintf(os.Stderr, "warning: structural match failed, falling back to line grep: %v\n", err)
+			fmt.Fprintf(cmd.ErrOrStderr(), "warning: structural match failed, falling back to line grep: %v\n", err)
 			return runLineGrep(cmd, r, args, false, false, jsonOutput)
 		}
 
@@ -235,7 +227,7 @@ func runStructuralGrep(cmd *cobra.Command, r *repo.Repo, args []string, forceStr
 
 	// If no results and no metavariables and not forced, fall back to line grep.
 	if len(results) == 0 && !forceStructural && !hasMetavariables(pattern) && !sexp {
-		fmt.Fprintf(os.Stderr, "warning: no structural matches, falling back to line grep\n")
+		fmt.Fprintf(cmd.ErrOrStderr(), "warning: no structural matches, falling back to line grep\n")
 		return runLineGrep(cmd, r, args, false, false, jsonOutput)
 	}
 
@@ -299,9 +291,10 @@ func rewrittenFiles(results []repo.StructuralGrepResult) []string {
 
 // JSONStructuralGrepOutput is the top-level JSON output for structural grep.
 type JSONStructuralGrepOutput struct {
-	Results   []JSONStructuralGrepResult `json:"results"`
-	IsRewrite bool                       `json:"isRewrite,omitempty"`
-	Rewritten []string                   `json:"rewritten,omitempty"`
+	SchemaVersion int                        `json:"schemaVersion,omitempty"`
+	Results       []JSONStructuralGrepResult `json:"results"`
+	IsRewrite     bool                       `json:"isRewrite,omitempty"`
+	Rewritten     []string                   `json:"rewritten,omitempty"`
 }
 
 // JSONStructuralGrepResult represents a single structural match in JSON.
@@ -347,6 +340,7 @@ func runHistoryGrep(cmd *cobra.Command, r *repo.Repo, args []string, sexp, jsonO
 	pattern := args[0]
 
 	opts := repo.HistoryGrepOptions{
+		Context:    cmd.Context(),
 		Pattern:    pattern,
 		SExp:       sexp,
 		Since:      since,
@@ -403,7 +397,8 @@ func runHistoryGrep(cmd *cobra.Command, r *repo.Repo, args []string, sexp, jsonO
 
 // JSONHistoryGrepOutput is the top-level JSON output for history grep.
 type JSONHistoryGrepOutput struct {
-	Results []JSONHistoryGrepResult `json:"results"`
+	SchemaVersion int                     `json:"schemaVersion,omitempty"`
+	Results       []JSONHistoryGrepResult `json:"results"`
 }
 
 // JSONHistoryGrepResult represents a single structural match in a historical commit.

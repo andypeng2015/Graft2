@@ -25,7 +25,7 @@ func newBlameCmd() *cobra.Command {
 				return fmt.Errorf("--limit must be greater than 0")
 			}
 
-			r, err := openRepo(".")
+			r, err := openRepoForCommand(cmd, ".")
 			if err != nil {
 				return err
 			}

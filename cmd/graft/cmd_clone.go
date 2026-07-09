@@ -27,7 +27,7 @@ func newCloneCmd() *cobra.Command {
 		Args:  cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			source := strings.TrimSpace(args[0])
-			localSourceRoot, isLocalSource, err := resolveLocalCloneSource(source)
+			localSourceRoot, isLocalSource, err := resolveLocalCloneSource(cmd, source)
 			if err != nil {
 				return err
 			}
@@ -91,6 +91,9 @@ func newCloneCmd() *cobra.Command {
 				return err
 			}
 			if err := r.SetRemote(remoteName, remoteSource); err != nil {
+				return err
+			}
+			if err := markClonedHooksUntrusted(r); err != nil {
 				return err
 			}
 
@@ -192,7 +195,7 @@ func syncModulesAfterClone(cmd *cobra.Command, absDest string, skip bool) error 
 	if skip {
 		return nil
 	}
-	r, err := openRepo(absDest)
+	r, err := openRepoForCommand(cmd, absDest)
 	if err != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(), "warning: module sync: open repo: %v\n", err)
 		return nil
@@ -213,7 +216,7 @@ func syncModulesAfterClone(cmd *cobra.Command, absDest string, skip bool) error 
 	return nil
 }
 
-func resolveLocalCloneSource(source string) (string, bool, error) {
+func resolveLocalCloneSource(cmd *cobra.Command, source string) (string, bool, error) {
 	if looksLikeRemoteURL(source) {
 		return "", false, nil
 	}
@@ -221,7 +224,7 @@ func resolveLocalCloneSource(source string) (string, bool, error) {
 	if err != nil {
 		return "", false, fmt.Errorf("resolve source: %w", err)
 	}
-	srcRepo, err := openRepo(absSource)
+	srcRepo, err := openRepoForCommand(cmd, absSource)
 	if err != nil {
 		return "", false, nil
 	}
@@ -242,11 +245,14 @@ func cloneFromLocalSource(cmd *cobra.Command, sourceRoot, sourceSpec, absDest, r
 	// will rebuild the index and set HEAD correctly.
 	os.Remove(filepath.Join(dstGraftDir, "index"))
 
-	r, err := openRepo(absDest)
+	r, err := openRepoForCommand(cmd, absDest)
 	if err != nil {
 		return err
 	}
 	if err := r.SetRemote(remoteName, sourceSpec); err != nil {
+		return err
+	}
+	if err := markClonedHooksUntrusted(r); err != nil {
 		return err
 	}
 
@@ -278,6 +284,13 @@ func cloneFromLocalSource(cmd *cobra.Command, sourceRoot, sourceSpec, absDest, r
 		return err
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "cloned %s into %s\n", sourceSpec, absDest)
+	return nil
+}
+
+func markClonedHooksUntrusted(r *repo.Repo) error {
+	if err := r.SetHooksTrusted(false); err != nil {
+		return fmt.Errorf("mark cloned hooks untrusted: %w", err)
+	}
 	return nil
 }
 

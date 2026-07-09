@@ -80,12 +80,7 @@ func newCoordTaskListCmd(jsonFlag *bool) *cobra.Command {
 		Use:   "list",
 		Short: "List tasks with optional filters",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			type taskWithWorkspace struct {
-				*coord.Task
-				SourceWorkspace string `json:"source_workspace,omitempty"`
-			}
-
-			var allTasks []taskWithWorkspace
+			var allTasks []JSONCoordTaskEntry
 
 			if all {
 				if err := iterateWorkspaces(func(name string, c *coord.Coordinator) error {
@@ -94,7 +89,7 @@ func newCoordTaskListCmd(jsonFlag *bool) *cobra.Command {
 						return nil // skip errors for individual workspaces
 					}
 					for _, t := range tasks {
-						allTasks = append(allTasks, taskWithWorkspace{
+						allTasks = append(allTasks, JSONCoordTaskEntry{
 							Task:            t,
 							SourceWorkspace: name,
 						})
@@ -104,7 +99,7 @@ func newCoordTaskListCmd(jsonFlag *bool) *cobra.Command {
 					return err
 				}
 			} else {
-				c, _, err := openCoordinator()
+				c, _, err := openCoordinatorForCommand(cmd)
 				if err != nil {
 					return err
 				}
@@ -113,12 +108,12 @@ func newCoordTaskListCmd(jsonFlag *bool) *cobra.Command {
 					return fmt.Errorf("list tasks: %w", err)
 				}
 				for _, t := range tasks {
-					allTasks = append(allTasks, taskWithWorkspace{Task: t})
+					allTasks = append(allTasks, JSONCoordTaskEntry{Task: t})
 				}
 			}
 
 			// Apply filters.
-			var filtered []taskWithWorkspace
+			var filtered []JSONCoordTaskEntry
 			for _, t := range allTasks {
 				if status != "" && t.Status != status {
 					continue
@@ -144,15 +139,15 @@ func newCoordTaskListCmd(jsonFlag *bool) *cobra.Command {
 			})
 
 			if *jsonFlag {
-				return outputJSON(filtered)
+				return writeJSON(cmd.OutOrStdout(), JSONCoordTasksOutput{Tasks: filtered})
 			}
 
 			if len(filtered) == 0 {
-				fmt.Println("No tasks.")
+				fmt.Fprintln(cmd.OutOrStdout(), "No tasks.")
 				return nil
 			}
 
-			w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+			w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 4, 2, ' ', 0)
 			if all {
 				fmt.Fprintln(w, "ID\tTITLE\tSTATUS\tASSIGNEE\tWORKSPACE\tSOURCE\tPRIORITY")
 				for _, t := range filtered {
@@ -188,7 +183,7 @@ func newCoordTaskGetCmd(jsonFlag *bool) *cobra.Command {
 		Short: "Show task details",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			c, _, err := openCoordinator()
+			c, _, err := openCoordinatorForCommand(cmd)
 			if err != nil {
 				return err
 			}
@@ -199,35 +194,36 @@ func newCoordTaskGetCmd(jsonFlag *bool) *cobra.Command {
 			}
 
 			if *jsonFlag {
-				return outputJSON(task)
+				return writeJSON(cmd.OutOrStdout(), JSONCoordTaskOutput{Task: task})
 			}
 
-			fmt.Printf("Task: %s\n", task.Title)
-			fmt.Printf("  ID:          %s\n", task.ID)
-			fmt.Printf("  Status:      %s\n", task.Status)
+			out := cmd.OutOrStdout()
+			fmt.Fprintf(out, "Task: %s\n", task.Title)
+			fmt.Fprintf(out, "  ID:          %s\n", task.ID)
+			fmt.Fprintf(out, "  Status:      %s\n", task.Status)
 			if task.Description != "" {
-				fmt.Printf("  Description: %s\n", task.Description)
+				fmt.Fprintf(out, "  Description: %s\n", task.Description)
 			}
 			if task.AssignedTo != "" {
-				fmt.Printf("  Assigned to: %s\n", task.AssignedTo)
+				fmt.Fprintf(out, "  Assigned to: %s\n", task.AssignedTo)
 			}
 			if task.Workspace != "" {
-				fmt.Printf("  Workspace:   %s\n", task.Workspace)
+				fmt.Fprintf(out, "  Workspace:   %s\n", task.Workspace)
 			}
 			if task.PlanID != "" {
-				fmt.Printf("  Plan:        %s\n", task.PlanID)
+				fmt.Fprintf(out, "  Plan:        %s\n", task.PlanID)
 				if task.PlanStepID != "" {
-					fmt.Printf("  Plan step:   %s\n", task.PlanStepID)
+					fmt.Fprintf(out, "  Plan step:   %s\n", task.PlanStepID)
 				}
 			}
 			if task.Priority != 0 {
-				fmt.Printf("  Priority:    %d\n", task.Priority)
+				fmt.Fprintf(out, "  Priority:    %d\n", task.Priority)
 			}
 			if len(task.Tags) > 0 {
-				fmt.Printf("  Tags:        %s\n", strings.Join(task.Tags, ", "))
+				fmt.Fprintf(out, "  Tags:        %s\n", strings.Join(task.Tags, ", "))
 			}
-			fmt.Printf("  Created:     %s\n", task.CreatedAt.Format("2006-01-02 15:04:05"))
-			fmt.Printf("  Updated:     %s\n", task.UpdatedAt.Format("2006-01-02 15:04:05"))
+			fmt.Fprintf(out, "  Created:     %s\n", task.CreatedAt.Format("2006-01-02 15:04:05"))
+			fmt.Fprintf(out, "  Updated:     %s\n", task.UpdatedAt.Format("2006-01-02 15:04:05"))
 
 			return nil
 		},
@@ -250,7 +246,7 @@ func newCoordTaskCreateCmd(jsonFlag *bool) *cobra.Command {
 		Short: "Create a new task",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			c, _, err := openCoordinator()
+			c, _, err := openCoordinatorForCommand(cmd)
 			if err != nil {
 				return err
 			}
@@ -279,10 +275,10 @@ func newCoordTaskCreateCmd(jsonFlag *bool) *cobra.Command {
 			}
 
 			if *jsonFlag {
-				return outputJSON(task)
+				return writeJSON(cmd.OutOrStdout(), JSONCoordTaskOutput{Task: task})
 			}
 
-			fmt.Printf("Created task %s: %s\n", task.ID, task.Title)
+			fmt.Fprintf(cmd.OutOrStdout(), "Created task %s: %s\n", task.ID, task.Title)
 			return nil
 		},
 	}
@@ -313,7 +309,7 @@ func newCoordTaskUpdateCmd(jsonFlag *bool) *cobra.Command {
 		Short: "Update a task's fields",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			c, _, err := openCoordinator()
+			c, _, err := openCoordinatorForCommand(cmd)
 			if err != nil {
 				return err
 			}
@@ -356,10 +352,10 @@ func newCoordTaskUpdateCmd(jsonFlag *bool) *cobra.Command {
 			}
 
 			if *jsonFlag {
-				return outputJSON(task)
+				return writeJSON(cmd.OutOrStdout(), JSONCoordTaskOutput{Task: task})
 			}
 
-			fmt.Printf("Updated task %s: %s [%s]\n", task.ID, task.Title, task.Status)
+			fmt.Fprintf(cmd.OutOrStdout(), "Updated task %s: %s [%s]\n", task.ID, task.Title, task.Status)
 			return nil
 		},
 	}
@@ -380,7 +376,7 @@ func newCoordTaskClaimCmd(jsonFlag *bool) *cobra.Command {
 		Short: "Assign a task to the current agent",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			c, r, err := openCoordinator()
+			c, r, err := openCoordinatorForCommand(cmd)
 			if err != nil {
 				return err
 			}
@@ -411,15 +407,15 @@ func newCoordTaskClaimCmd(jsonFlag *bool) *cobra.Command {
 			}
 
 			if *jsonFlag {
-				return outputJSON(map[string]any{
-					"status":      "claimed",
-					"task_id":     task.ID,
-					"assigned_to": agentName,
-					"task_status": task.Status,
+				return writeJSON(cmd.OutOrStdout(), JSONCoordTaskClaimOutput{
+					Status:     "claimed",
+					TaskID:     task.ID,
+					AssignedTo: agentName,
+					TaskStatus: task.Status,
 				})
 			}
 
-			fmt.Printf("Claimed task %s: %s (assigned to %s)\n", task.ID, task.Title, agentName)
+			fmt.Fprintf(cmd.OutOrStdout(), "Claimed task %s: %s (assigned to %s)\n", task.ID, task.Title, agentName)
 			return nil
 		},
 	}
@@ -431,7 +427,7 @@ func newCoordTaskDeleteCmd(jsonFlag *bool) *cobra.Command {
 		Short: "Delete a task",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			c, _, err := openCoordinator()
+			c, _, err := openCoordinatorForCommand(cmd)
 			if err != nil {
 				return err
 			}
@@ -441,13 +437,13 @@ func newCoordTaskDeleteCmd(jsonFlag *bool) *cobra.Command {
 			}
 
 			if *jsonFlag {
-				return outputJSON(map[string]string{
-					"status": "deleted",
-					"id":     args[0],
+				return writeJSON(cmd.OutOrStdout(), JSONCoordTaskDeleteOutput{
+					Status: "deleted",
+					ID:     args[0],
 				})
 			}
 
-			fmt.Printf("Deleted task %s\n", args[0])
+			fmt.Fprintf(cmd.OutOrStdout(), "Deleted task %s\n", args[0])
 			return nil
 		},
 	}

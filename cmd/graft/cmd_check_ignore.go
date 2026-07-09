@@ -23,7 +23,8 @@ type checkIgnoreResult struct {
 }
 
 type checkIgnoreOutput struct {
-	Results []checkIgnoreResult `json:"results"`
+	SchemaVersion int                 `json:"schemaVersion,omitempty"`
+	Results       []checkIgnoreResult `json:"results"`
 }
 
 func newCheckIgnoreCmd() *cobra.Command {
@@ -41,7 +42,7 @@ func newCheckIgnoreCmd() *cobra.Command {
 				return fmt.Errorf("--graft-only and --git-only cannot be used together")
 			}
 
-			r, err := openRepo(".")
+			r, err := openRepoForCommand(cmd, ".")
 			if err != nil {
 				return err
 			}

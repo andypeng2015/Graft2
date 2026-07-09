@@ -2,22 +2,40 @@
 package main
 
 import (
-	"errors"
 	"fmt"
 	"os"
+	"runtime"
 
+	"github.com/odvcencio/graft/pkg/remote"
+	"github.com/odvcencio/graft/pkg/repo"
 	"github.com/spf13/cobra"
 )
 
-var version = "0.7.0"
+var version = "0.10.0"
+var commit = "unknown"
+var buildTime = "unknown"
 
 func main() {
-	root := &cobra.Command{
-		Use:   "graft",
-		Short: "Structural version control powered by tree-sitter",
+	root := newRootCmd()
+	if err := root.Execute(); err != nil {
+		printCommandError(os.Stderr, err)
+		os.Exit(commandExitCode(err))
 	}
+}
+
+func newRootCmd() *cobra.Command {
+	root := &cobra.Command{
+		Use:           "graft",
+		Short:         "Structural version control powered by tree-sitter",
+		SilenceUsage:  true,
+		SilenceErrors: true,
+	}
+	root.SetFlagErrorFunc(func(cmd *cobra.Command, err error) error {
+		return usageError(cmd, err)
+	})
 
 	root.AddCommand(newVersionCmd())
+	root.AddCommand(newProtocolCmd())
 	root.AddCommand(newInitCmd())
 	root.AddCommand(newAddCmd())
 	root.AddCommand(newResetCmd())
@@ -48,6 +66,7 @@ func main() {
 	root.AddCommand(newReflogCmd())
 	root.AddCommand(newGcCmd())
 	root.AddCommand(newVerifyCmd())
+	root.AddCommand(newDoctorCmd())
 	root.AddCommand(newStashCmd())
 	root.AddCommand(newRebaseCmd())
 	root.AddCommand(newSparseCheckoutCmd())
@@ -58,7 +77,9 @@ func main() {
 	root.AddCommand(newGrepCmd())
 	root.AddCommand(newContextCmd())
 	root.AddCommand(newShortlogCmd())
+	root.AddCommand(newWorkflowsCmd())
 	root.AddCommand(newArchiveCmd())
+	root.AddCommand(newReleaseCmd())
 	root.AddCommand(newModuleCmd())
 	root.AddCommand(newRepairCmd())
 	root.AddCommand(newWorkonCmd())
@@ -66,23 +87,33 @@ func main() {
 	root.AddCommand(newCoorddCmd())
 	root.AddCommand(newWorkspaceCmd())
 	root.AddCommand(newMCPCmd())
+	root.AddCommand(newManCmd(root))
+	root.AddCommand(newCompletionCmd(root))
 
-	if err := root.Execute(); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		var exitCoder interface{ ExitCode() int }
-		if errors.As(err, &exitCoder) {
-			os.Exit(exitCoder.ExitCode())
-		}
-		os.Exit(1)
-	}
+	return root
 }
 
 func newVersionCmd() *cobra.Command {
-	return &cobra.Command{
+	var jsonFlag bool
+
+	cmd := &cobra.Command{
 		Use:   "version",
 		Short: "Print version",
 		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Println("graft " + version)
+			if jsonFlag {
+				_ = writeJSON(cmd.OutOrStdout(), JSONVersionOutput{
+					Version:                        version,
+					Commit:                         commit,
+					BuildTime:                      buildTime,
+					GoVersion:                      runtime.Version(),
+					SupportedRepositoryFormat:      repo.RepositoryFormatVersion,
+					SupportedRemoteProtocolVersion: remote.ProtocolVersion,
+				})
+				return
+			}
+			fmt.Fprintln(cmd.OutOrStdout(), "graft "+version)
 		},
 	}
+	cmd.Flags().BoolVar(&jsonFlag, "json", false, "output in JSON format")
+	return cmd
 }

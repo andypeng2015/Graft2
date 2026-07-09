@@ -22,7 +22,7 @@ Use -c to create a new branch and switch to it in one step.`,
 				return fmt.Errorf("branch name is required (or use -c to create a new branch)")
 			}
 
-			r, err := openRepo(".")
+			r, err := openRepoForCommand(cmd, ".")
 			if err != nil {
 				return err
 			}
@@ -32,11 +32,12 @@ Use -c to create a new branch and switch to it in one step.`,
 				target = args[0]
 			}
 
-			// TODO: handle "-" for previous branch once reflog tracks
-			// checkout operations with enough info to identify the
-			// source branch.
 			if target == "-" {
-				return fmt.Errorf("switch to previous branch (-) is not yet supported")
+				previous, err := r.PreviousCheckoutBranch()
+				if err != nil {
+					return fmt.Errorf("switch to previous branch: %w", err)
+				}
+				target = previous
 			}
 
 			// Handle -c (create and switch to new branch).

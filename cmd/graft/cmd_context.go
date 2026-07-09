@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -70,9 +69,7 @@ symbols). Same-package and non-Go edges are not yet represented.`,
 			}
 			out := cmd.OutOrStdout()
 			if jsonOutput {
-				enc := json.NewEncoder(out)
-				enc.SetIndent("", "  ")
-				return enc.Encode(res)
+				return writeJSON(out, entityContextResultToJSON(*res))
 			}
 			renderContext(out, res)
 			return nil

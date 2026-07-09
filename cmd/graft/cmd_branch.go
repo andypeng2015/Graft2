@@ -14,7 +14,7 @@ func newBranchCmd() *cobra.Command {
 		Short: "List, create, or delete branches",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			r, err := openRepo(".")
+			r, err := openRepoForCommand(cmd, ".")
 			if err != nil {
 				return err
 			}

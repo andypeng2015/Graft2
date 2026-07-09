@@ -1,18 +1,23 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/odvcencio/graft/pkg/userconfig"
 	"github.com/spf13/cobra"
@@ -276,6 +281,217 @@ func TestFormatAuthStatusLinesAllHosts(t *testing.T) {
 	}
 }
 
+func TestAuthStatusWarnsOnInsecureConfigPermissions(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	if err := userconfig.Save(&userconfig.Config{
+		OrchardURL: "https://orchard.example.com",
+		Token:      "secret-token",
+		Username:   "alice",
+	}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	cfgPath := filepath.Join(home, ".graftconfig")
+	if err := os.Chmod(cfgPath, 0o644); err != nil {
+		t.Fatalf("Chmod: %v", err)
+	}
+
+	var out bytes.Buffer
+	cmd := newAuthStatusCmd()
+	cmd.SetOut(&out)
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	raw := out.String()
+	if !strings.Contains(raw, "warning: user config") {
+		t.Fatalf("status output missing permissions warning:\n%s", raw)
+	}
+	if !strings.Contains(raw, "repair: chmod 600") {
+		t.Fatalf("status output missing chmod repair:\n%s", raw)
+	}
+}
+
+func TestAuthDoctorJSONReportsEnvTokenWithoutLeakingSecrets(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("GRAFT_TOKEN", "env-secret-token")
+
+	if err := userconfig.Save(&userconfig.Config{
+		OrchardURL: "https://orchard.example.com",
+		Token:      "stored-secret-token",
+		Username:   "alice",
+		Owner:      "alice",
+	}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	var out bytes.Buffer
+	cmd := newAuthDoctorCmd()
+	cmd.SilenceUsage = true
+	cmd.SetOut(&out)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"--host", "https://orchard.example.com", "--json"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute: %v\nraw: %s", err, out.String())
+	}
+
+	raw := out.String()
+	for _, secret := range []string{"env-secret-token", "stored-secret-token"} {
+		if strings.Contains(raw, secret) {
+			t.Fatalf("auth doctor leaked %q:\n%s", secret, raw)
+		}
+	}
+
+	var result JSONAuthDoctorOutput
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+		t.Fatalf("output is not valid JSON: %v\nraw: %s", err, raw)
+	}
+	if !result.OK {
+		t.Fatalf("ok = false, want true: %+v", result.Diagnostics)
+	}
+	if !result.TokenSet {
+		t.Fatalf("TokenSet = false, want true: %+v", result)
+	}
+	if result.TokenSource != "env:GRAFT_TOKEN" {
+		t.Fatalf("TokenSource = %q, want env:GRAFT_TOKEN", result.TokenSource)
+	}
+	if !authDoctorOutputHasCode(result, "auth_token_expiry_unknown") {
+		t.Fatalf("expected opaque-token expiry warning: %+v", result.Diagnostics)
+	}
+}
+
+func TestAuthDoctorJSONReportsExpiredJWT(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("GRAFT_TOKEN", "")
+
+	expiredToken := unsignedTestJWT(time.Now().Add(-time.Hour))
+	if err := userconfig.Save(&userconfig.Config{
+		OrchardURL: "https://orchard.example.com",
+		Token:      expiredToken,
+		Username:   "alice",
+		Owner:      "alice",
+	}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	var out bytes.Buffer
+	cmd := newAuthDoctorCmd()
+	cmd.SilenceUsage = true
+	cmd.SetOut(&out)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"--host", "https://orchard.example.com", "--json"})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("Execute succeeded, want expired token failure")
+	}
+	if got := commandExitCode(err); got != exitVerificationFailure {
+		t.Fatalf("exit code = %d, want %d", got, exitVerificationFailure)
+	}
+	if strings.Contains(out.String(), expiredToken) {
+		t.Fatalf("auth doctor leaked token:\n%s", out.String())
+	}
+
+	var result JSONAuthDoctorOutput
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+		t.Fatalf("output is not valid JSON: %v\nraw: %s", err, out.String())
+	}
+	if result.OK {
+		t.Fatal("ok = true, want false")
+	}
+	if !result.TokenExpiryKnown || !result.TokenExpired {
+		t.Fatalf("token expiry fields = known:%t expired:%t, want true/true", result.TokenExpiryKnown, result.TokenExpired)
+	}
+	if !authDoctorOutputHasCode(result, "auth_token_expired") {
+		t.Fatalf("diagnostics missing auth_token_expired: %+v", result.Diagnostics)
+	}
+}
+
+func TestAuthDoctorJSONReportsInsecureConfigPermissions(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("GRAFT_TOKEN", "")
+
+	if err := userconfig.Save(&userconfig.Config{
+		OrchardURL: "https://orchard.example.com",
+		Token:      "stored-secret-token",
+		Username:   "alice",
+		Owner:      "alice",
+	}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	cfgPath := filepath.Join(home, ".graftconfig")
+	if err := os.Chmod(cfgPath, 0o644); err != nil {
+		t.Fatalf("Chmod: %v", err)
+	}
+
+	var out bytes.Buffer
+	cmd := newAuthDoctorCmd()
+	cmd.SilenceUsage = true
+	cmd.SetOut(&out)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"--host", "https://orchard.example.com", "--json"})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("Execute succeeded, want insecure config failure")
+	}
+	if got := commandExitCode(err); got != exitVerificationFailure {
+		t.Fatalf("exit code = %d, want %d", got, exitVerificationFailure)
+	}
+	if strings.Contains(out.String(), "stored-secret-token") {
+		t.Fatalf("auth doctor leaked token:\n%s", out.String())
+	}
+
+	var result JSONAuthDoctorOutput
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+		t.Fatalf("output is not valid JSON: %v\nraw: %s", err, out.String())
+	}
+	if result.OK {
+		t.Fatal("ok = true, want false")
+	}
+	if !authDoctorOutputHasCode(result, "user_config_permissions_insecure") {
+		t.Fatalf("diagnostics missing user_config_permissions_insecure: %+v", result.Diagnostics)
+	}
+}
+
+func TestAuthDoctorJSONReportsMissingToken(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("GRAFT_TOKEN", "")
+
+	var out bytes.Buffer
+	cmd := newAuthDoctorCmd()
+	cmd.SilenceUsage = true
+	cmd.SetOut(&out)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"--host", "https://orchard.example.com", "--json"})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("Execute succeeded, want missing token failure")
+	}
+	if got := commandExitCode(err); got != exitVerificationFailure {
+		t.Fatalf("exit code = %d, want %d", got, exitVerificationFailure)
+	}
+
+	var result JSONAuthDoctorOutput
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+		t.Fatalf("output is not valid JSON: %v\nraw: %s", err, out.String())
+	}
+	if result.OK {
+		t.Fatal("ok = true, want false")
+	}
+	if !authDoctorOutputHasCode(result, "auth_token_missing") {
+		t.Fatalf("diagnostics missing auth_token_missing: %+v", result.Diagnostics)
+	}
+}
+
 func TestClearAllStoredAuthTokensPreservesProfiles(t *testing.T) {
 	cfg := &userconfig.Config{
 		OrchardURL: "https://orchard.example.com",
@@ -313,4 +529,19 @@ func TestClearAllStoredAuthTokensPreservesProfiles(t *testing.T) {
 			t.Fatalf("%s username = %q, want %q", host, profile.Username, wantUser)
 		}
 	}
+}
+
+func authDoctorOutputHasCode(result JSONAuthDoctorOutput, code string) bool {
+	for _, d := range result.Diagnostics {
+		if d.Code == code {
+			return true
+		}
+	}
+	return false
+}
+
+func unsignedTestJWT(exp time.Time) string {
+	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none"}`))
+	payload := base64.RawURLEncoding.EncodeToString([]byte(fmt.Sprintf(`{"exp":%d}`, exp.Unix())))
+	return header + "." + payload + "."
 }

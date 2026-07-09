@@ -59,15 +59,15 @@ func newCoordNoteListCmd(jsonFlag *bool) *cobra.Command {
 			}
 
 			if *jsonFlag {
-				return outputJSON(filtered)
+				return writeJSON(cmd.OutOrStdout(), JSONCoordNotesOutput{Notes: filtered})
 			}
 
 			if len(filtered) == 0 {
-				fmt.Println("No notes.")
+				fmt.Fprintln(cmd.OutOrStdout(), "No notes.")
 				return nil
 			}
 
-			w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+			w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 4, 2, ' ', 0)
 			fmt.Fprintln(w, "ID\tKIND\tSTATUS\tTITLE\tUPDATED")
 			for _, note := range filtered {
 				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
@@ -103,33 +103,34 @@ func newCoordNoteGetCmd(jsonFlag *bool) *cobra.Command {
 			}
 
 			if *jsonFlag {
-				return outputJSON(note)
+				return writeJSON(cmd.OutOrStdout(), JSONCoordNoteOutput{Note: note})
 			}
 
-			fmt.Printf("Note: %s\n", note.Title)
-			fmt.Printf("  ID:        %s\n", note.ID)
-			fmt.Printf("  Kind:      %s\n", note.Kind)
-			fmt.Printf("  Status:    %s\n", note.Status)
+			out := cmd.OutOrStdout()
+			fmt.Fprintf(out, "Note: %s\n", note.Title)
+			fmt.Fprintf(out, "  ID:        %s\n", note.ID)
+			fmt.Fprintf(out, "  Kind:      %s\n", note.Kind)
+			fmt.Fprintf(out, "  Status:    %s\n", note.Status)
 			if note.Author != "" {
-				fmt.Printf("  Author:    %s\n", note.Author)
+				fmt.Fprintf(out, "  Author:    %s\n", note.Author)
 			}
 			if note.Workspace != "" {
-				fmt.Printf("  Workspace: %s\n", note.Workspace)
+				fmt.Fprintf(out, "  Workspace: %s\n", note.Workspace)
 			}
 			if note.PlanID != "" {
-				fmt.Printf("  Plan:      %s\n", note.PlanID)
+				fmt.Fprintf(out, "  Plan:      %s\n", note.PlanID)
 			}
 			if note.TaskID != "" {
-				fmt.Printf("  Task:      %s\n", note.TaskID)
+				fmt.Fprintf(out, "  Task:      %s\n", note.TaskID)
 			}
-			fmt.Printf("  Created:   %s\n", note.CreatedAt.Format("2006-01-02 15:04:05"))
-			fmt.Printf("  Updated:   %s\n", note.UpdatedAt.Format("2006-01-02 15:04:05"))
+			fmt.Fprintf(out, "  Created:   %s\n", note.CreatedAt.Format("2006-01-02 15:04:05"))
+			fmt.Fprintf(out, "  Updated:   %s\n", note.UpdatedAt.Format("2006-01-02 15:04:05"))
 			if len(note.Tags) > 0 {
-				fmt.Printf("  Tags:      %s\n", strings.Join(note.Tags, ", "))
+				fmt.Fprintf(out, "  Tags:      %s\n", strings.Join(note.Tags, ", "))
 			}
 			if note.Body != "" {
-				fmt.Println()
-				fmt.Println(note.Body)
+				fmt.Fprintln(out)
+				fmt.Fprintln(out, note.Body)
 			}
 			return nil
 		},
@@ -179,9 +180,9 @@ func newCoordNoteCreateCmd(jsonFlag *bool) *cobra.Command {
 			}
 
 			if *jsonFlag {
-				return outputJSON(note)
+				return writeJSON(cmd.OutOrStdout(), JSONCoordNoteOutput{Note: note})
 			}
-			fmt.Printf("Created note %s: %s\n", note.ID, note.Title)
+			fmt.Fprintf(cmd.OutOrStdout(), "Created note %s: %s\n", note.ID, note.Title)
 			return nil
 		},
 	}
@@ -259,9 +260,9 @@ func newCoordNoteUpdateCmd(jsonFlag *bool) *cobra.Command {
 			}
 
 			if *jsonFlag {
-				return outputJSON(note)
+				return writeJSON(cmd.OutOrStdout(), JSONCoordNoteOutput{Note: note})
 			}
-			fmt.Printf("Updated note %s\n", note.ID)
+			fmt.Fprintf(cmd.OutOrStdout(), "Updated note %s\n", note.ID)
 			return nil
 		},
 	}
@@ -292,12 +293,12 @@ func newCoordNoteDeleteCmd(jsonFlag *bool) *cobra.Command {
 				return fmt.Errorf("delete note: %w", err)
 			}
 			if *jsonFlag {
-				return outputJSON(map[string]string{
-					"status": "deleted",
-					"id":     args[0],
+				return writeJSON(cmd.OutOrStdout(), JSONCoordNoteDeleteOutput{
+					Status: "deleted",
+					ID:     args[0],
 				})
 			}
-			fmt.Printf("Deleted note %s\n", args[0])
+			fmt.Fprintf(cmd.OutOrStdout(), "Deleted note %s\n", args[0])
 			return nil
 		},
 	}

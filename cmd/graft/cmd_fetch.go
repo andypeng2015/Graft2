@@ -21,7 +21,7 @@ func newFetchCmd() *cobra.Command {
 		Long:  "Fetch downloads objects and refs from a remote without modifying the working tree or current branch. Remote refs are stored under refs/remotes/<remote>/.",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			r, err := openRepo(".")
+			r, err := openRepoForCommand(cmd, ".")
 			if err != nil {
 				return err
 			}

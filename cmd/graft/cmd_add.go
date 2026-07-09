@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -34,7 +33,7 @@ func newAddCmd() *cobra.Command {
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if stdin || stdin0 {
-				scanner := bufio.NewScanner(os.Stdin)
+				scanner := bufio.NewScanner(cmd.InOrStdin())
 				if stdin0 {
 					scanner.Split(splitNull)
 				}
@@ -49,7 +48,7 @@ func newAddCmd() *cobra.Command {
 				}
 			}
 
-			r, err := openRepo(".")
+			r, err := openRepoForCommand(cmd, ".")
 			if err != nil {
 				return err
 			}

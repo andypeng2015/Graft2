@@ -71,6 +71,7 @@ func newAuthCmd() *cobra.Command {
 	cmd.AddCommand(newAuthBootstrapSSHCmd())
 	cmd.AddCommand(newAuthRegisterSSHKeyCmd())
 	cmd.AddCommand(newAuthStatusCmd())
+	cmd.AddCommand(newAuthDoctorCmd())
 	cmd.AddCommand(newAuthLogoutCmd())
 	return cmd
 }
@@ -428,7 +429,10 @@ func newAuthStatusCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			for _, line := range formatAuthStatusLines(cfg, path, baseURL, all) {
+			lines := formatAuthStatusLines(cfg, path, baseURL, all)
+			status, statusErr := userconfig.CheckPermissions()
+			lines = appendAuthConfigPermissionLines(lines, status, statusErr)
+			for _, line := range lines {
 				fmt.Fprintln(cmd.OutOrStdout(), line)
 			}
 			return nil
@@ -526,6 +530,349 @@ func formatAuthStatusLines(cfg *userconfig.Config, path, selectedHost string, in
 		}
 	}
 	return lines
+}
+
+func appendAuthConfigPermissionLines(lines []string, status userconfig.PermissionStatus, err error) []string {
+	if err != nil {
+		return append(lines, "config permissions: unknown ("+err.Error()+")")
+	}
+	if !status.Exists || status.Secure {
+		return lines
+	}
+	warning := strings.TrimSpace(status.Warning)
+	if warning == "" {
+		warning = fmt.Sprintf("user config has permissions %s; expected -rw------- for stored credentials", status.Mode.String())
+	}
+	lines = append(lines, "warning: "+warning)
+	if repair := strings.TrimSpace(status.Repair); repair != "" {
+		lines = append(lines, "repair: "+repair)
+	}
+	return lines
+}
+
+func newAuthDoctorCmd() *cobra.Command {
+	host := configuredOrchardHost("")
+	var all bool
+	var jsonFlag bool
+	cmd := &cobra.Command{
+		Use:   "doctor",
+		Short: "Diagnose Orchard auth configuration without exposing tokens",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			report, err := authDoctorReport(host, all, time.Now().UTC())
+			if err != nil {
+				return err
+			}
+			if jsonFlag {
+				if err := writeJSON(cmd.OutOrStdout(), report); err != nil {
+					return err
+				}
+			} else {
+				printAuthDoctorReport(cmd.OutOrStdout(), report)
+			}
+			if !report.OK {
+				return authDoctorFailure()
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&host, "host", host, "Orchard base URL (default: --host, GRAFT_ORCHARD_URL, ~/.graftconfig, or https://orchard.dev)")
+	cmd.Flags().BoolVar(&all, "all", false, "check auth state for all configured Orchard hosts")
+	cmd.Flags().BoolVar(&jsonFlag, "json", false, "output in JSON format")
+	return cmd
+}
+
+func authDoctorFailure() error {
+	return newCommandError(
+		errorCodeVerificationFailed,
+		exitVerificationFailure,
+		fmt.Errorf("auth doctor: credentials are not ready"),
+		"run `graft auth setup`, set GRAFT_TOKEN, or fix ~/.graftconfig permissions",
+	)
+}
+
+func authDoctorReport(host string, includeAll bool, now time.Time) (JSONAuthDoctorOutput, error) {
+	cfg, loadErr := userconfig.Load()
+	if cfg == nil {
+		cfg = &userconfig.Config{}
+	}
+
+	out := JSONAuthDoctorOutput{
+		SchemaVersion: JSONSchemaVersion,
+		OK:            true,
+	}
+	if configPath, err := userconfig.Path(); err == nil {
+		out.ConfigPath = configPath
+	} else {
+		out.Diagnostics = append(out.Diagnostics, JSONRepositoryDiagnostic{
+			Severity: "error",
+			Code:     "user_config_path_unresolved",
+			Message:  err.Error(),
+			Repair:   "set HOME to a writable user directory",
+		})
+	}
+
+	selectedHost, err := authDoctorSelectedHost(cfg, host)
+	if err != nil {
+		return out, err
+	}
+	out.SelectedHost = selectedHost
+
+	if status, err := userconfig.CheckPermissions(); err != nil {
+		out.Diagnostics = append(out.Diagnostics, JSONRepositoryDiagnostic{
+			Severity: "error",
+			Code:     "user_config_permissions_unknown",
+			Message:  err.Error(),
+			Repair:   "inspect ~/.graftconfig and its parent directory",
+		})
+	} else {
+		out.ConfigFilePresent = status.Exists
+		out.ConfigFileSecure = status.Secure
+		if status.Exists {
+			out.ConfigFileMode = status.Mode.String()
+		}
+		if status.Exists && !status.Secure {
+			out.Diagnostics = append(out.Diagnostics, JSONRepositoryDiagnostic{
+				Severity: "error",
+				Code:     "user_config_permissions_insecure",
+				Message:  status.Warning,
+				Repair:   status.Repair,
+			})
+		}
+	}
+
+	if loadErr != nil {
+		out.Diagnostics = append(out.Diagnostics, JSONRepositoryDiagnostic{
+			Severity: "error",
+			Code:     "user_config_load_failed",
+			Message:  loadErr.Error(),
+			Repair:   "inspect ~/.graftconfig or rerun graft auth setup",
+		})
+	}
+
+	hosts := []string{selectedHost}
+	if includeAll {
+		hosts = knownAuthHosts(cfg, selectedHost)
+		if len(hosts) == 0 {
+			hosts = []string{selectedHost}
+		}
+	}
+	defaultHost := cfg.DefaultOrchardURL()
+	for _, h := range hosts {
+		hostReport := authDoctorHostReport(cfg, h, selectedHost, defaultHost, now)
+		out.Hosts = append(out.Hosts, hostReport)
+		if h == selectedHost {
+			out.TokenSet = hostReport.TokenSet
+			out.TokenSource = hostReport.TokenSource
+			out.TokenExpiryKnown = hostReport.TokenExpiryKnown
+			out.TokenExpiresAt = hostReport.TokenExpiresAt
+			out.TokenExpired = hostReport.TokenExpired
+		}
+		authDoctorAppendHostDiagnostics(&out, hostReport, h == selectedHost, now)
+	}
+
+	out.OK = !diagnosticsContainSeverity(out.Diagnostics, "error")
+	return out, nil
+}
+
+func authDoctorSelectedHost(cfg *userconfig.Config, explicit string) (string, error) {
+	host := strings.TrimSpace(explicit)
+	if host == "" {
+		if envHost := strings.TrimSpace(os.Getenv("GRAFT_ORCHARD_URL")); envHost != "" {
+			host = envHost
+		} else if cfg != nil {
+			host = cfg.DefaultOrchardURL()
+		}
+	}
+	return normalizeBaseURL(host, defaultOrchardBaseURL)
+}
+
+func authDoctorHostReport(cfg *userconfig.Config, host, selectedHost, defaultHost string, now time.Time) JSONAuthDoctorHost {
+	profile := userconfig.OrchardProfile{}
+	if cfg != nil {
+		profile = cfg.OrchardProfile(host)
+	}
+	token, source := authTokenWithSource(cfg, host)
+	out := JSONAuthDoctorHost{
+		Host:               host,
+		Selected:           host == selectedHost,
+		Default:            strings.TrimSpace(defaultHost) != "" && host == defaultHost,
+		UsernameConfigured: strings.TrimSpace(profile.Username) != "",
+		OwnerConfigured:    strings.TrimSpace(profile.Owner) != "",
+		TokenSet:           strings.TrimSpace(token) != "",
+		TokenSource:        source,
+	}
+	if expiry, ok := authTokenExpiry(token); ok {
+		out.TokenExpiryKnown = true
+		out.TokenExpiresAt = expiry.UTC().Format(time.RFC3339)
+		out.TokenExpired = !expiry.After(now)
+	}
+	return out
+}
+
+func authTokenWithSource(cfg *userconfig.Config, host string) (string, string) {
+	if token := strings.TrimSpace(os.Getenv("GRAFT_TOKEN")); token != "" {
+		return token, "env:GRAFT_TOKEN"
+	}
+	if cfg == nil {
+		return "", ""
+	}
+	profile := cfg.OrchardProfile(host)
+	token := strings.TrimSpace(profile.Token)
+	if token == "" {
+		return "", ""
+	}
+	for _, profileHost := range cfg.OrchardProfileHosts() {
+		if profileHost == host && strings.TrimSpace(cfg.OrchardProfiles[profileHost].Token) != "" {
+			return token, "config:orchard_profiles"
+		}
+	}
+	if strings.TrimSpace(cfg.Token) != "" {
+		return token, "config:token"
+	}
+	return token, "config:profile"
+}
+
+func authTokenExpiry(token string) (time.Time, bool) {
+	parts := strings.Split(strings.TrimSpace(token), ".")
+	if len(parts) < 2 {
+		return time.Time{}, false
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		payload, err = base64.URLEncoding.DecodeString(parts[1])
+	}
+	if err != nil {
+		return time.Time{}, false
+	}
+	var claims struct {
+		Exp json.Number `json:"exp"`
+	}
+	dec := json.NewDecoder(bytes.NewReader(payload))
+	dec.UseNumber()
+	if err := dec.Decode(&claims); err != nil {
+		return time.Time{}, false
+	}
+	if strings.TrimSpace(claims.Exp.String()) == "" {
+		return time.Time{}, false
+	}
+	seconds, err := claims.Exp.Int64()
+	if err != nil || seconds <= 0 {
+		return time.Time{}, false
+	}
+	return time.Unix(seconds, 0).UTC(), true
+}
+
+func authDoctorAppendHostDiagnostics(out *JSONAuthDoctorOutput, hostReport JSONAuthDoctorHost, selected bool, now time.Time) {
+	scope := fmt.Sprintf("auth host %s", hostReport.Host)
+	if !hostReport.TokenSet {
+		severity := "warning"
+		if selected {
+			severity = "error"
+		}
+		out.Diagnostics = append(out.Diagnostics, JSONRepositoryDiagnostic{
+			Severity:  severity,
+			Code:      "auth_token_missing",
+			Message:   scope + " has no bearer token configured",
+			Repair:    "run `graft auth setup` or set GRAFT_TOKEN",
+			Operation: "auth",
+		})
+	}
+	if hostReport.TokenSet && !hostReport.TokenExpiryKnown {
+		out.Diagnostics = append(out.Diagnostics, JSONRepositoryDiagnostic{
+			Severity:  "warning",
+			Code:      "auth_token_expiry_unknown",
+			Message:   scope + " token expiry is not encoded or recorded",
+			Repair:    "refresh credentials if the remote rejects authentication",
+			Operation: "auth",
+		})
+	}
+	if hostReport.TokenExpired {
+		out.Diagnostics = append(out.Diagnostics, JSONRepositoryDiagnostic{
+			Severity:  "error",
+			Code:      "auth_token_expired",
+			Message:   scope + " token is expired",
+			Repair:    "run `graft auth setup` or refresh GRAFT_TOKEN",
+			Operation: "auth",
+		})
+	} else if hostReport.TokenExpiryKnown {
+		expiry, err := time.Parse(time.RFC3339, hostReport.TokenExpiresAt)
+		if err == nil && expiry.Before(now.Add(7*24*time.Hour)) {
+			out.Diagnostics = append(out.Diagnostics, JSONRepositoryDiagnostic{
+				Severity:  "warning",
+				Code:      "auth_token_expiring_soon",
+				Message:   scope + " token expires within 7 days",
+				Repair:    "run `graft auth setup` or refresh GRAFT_TOKEN before it expires",
+				Operation: "auth",
+			})
+		}
+	}
+	if selected && !hostReport.UsernameConfigured {
+		out.Diagnostics = append(out.Diagnostics, JSONRepositoryDiagnostic{
+			Severity:  "warning",
+			Code:      "auth_username_missing",
+			Message:   scope + " has no username configured",
+			Repair:    "run `graft auth setup` or set the Orchard username in ~/.graftconfig",
+			Operation: "auth",
+		})
+	}
+	if selected && !hostReport.OwnerConfigured {
+		out.Diagnostics = append(out.Diagnostics, JSONRepositoryDiagnostic{
+			Severity:  "warning",
+			Code:      "auth_owner_missing",
+			Message:   scope + " has no owner configured",
+			Repair:    "run `graft auth setup` or set the Orchard owner in ~/.graftconfig",
+			Operation: "auth",
+		})
+	}
+}
+
+func printAuthDoctorReport(out io.Writer, report JSONAuthDoctorOutput) {
+	if report.OK {
+		fmt.Fprintln(out, "ok: auth configuration is usable")
+	} else {
+		fmt.Fprintln(out, "auth health: errors found")
+	}
+	fmt.Fprintf(out, "host: %s\n", report.SelectedHost)
+	if report.ConfigPath != "" {
+		fmt.Fprintf(out, "config: %s\n", report.ConfigPath)
+	}
+	if report.ConfigFilePresent {
+		state := "secure"
+		if !report.ConfigFileSecure {
+			state = "insecure"
+		}
+		fmt.Fprintf(out, "config permissions: %s", state)
+		if report.ConfigFileMode != "" {
+			fmt.Fprintf(out, " (%s)", report.ConfigFileMode)
+		}
+		fmt.Fprintln(out)
+	}
+	for _, host := range report.Hosts {
+		labels := make([]string, 0, 2)
+		if host.Selected {
+			labels = append(labels, "selected")
+		}
+		if host.Default {
+			labels = append(labels, "default")
+		}
+		labelText := ""
+		if len(labels) > 0 {
+			labelText = " (" + strings.Join(labels, ", ") + ")"
+		}
+		fmt.Fprintf(out, "auth: %s%s token=%t source=%s username=%t owner=%t\n",
+			host.Host,
+			labelText,
+			host.TokenSet,
+			host.TokenSource,
+			host.UsernameConfigured,
+			host.OwnerConfigured,
+		)
+		if host.TokenExpiryKnown {
+			fmt.Fprintf(out, "  token expires: %s\n", host.TokenExpiresAt)
+		}
+	}
+	printDoctorGlobalDiagnostics(out, report.Diagnostics)
 }
 
 func knownAuthHosts(cfg *userconfig.Config, selectedHost string) []string {

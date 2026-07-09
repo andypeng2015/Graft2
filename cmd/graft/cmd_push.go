@@ -15,13 +15,15 @@ import (
 func newPushCmd() *cobra.Command {
 	var force bool
 	var checkOnly bool
+	var requireSigned bool
+	var allowedSignersPath string
 
 	cmd := &cobra.Command{
 		Use:   "push [remote] [branch]",
 		Short: "Push a local branch or ref to a remote",
 		Args:  cobra.MaximumNArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			r, err := openRepo(".")
+			r, err := openRepoForCommand(cmd, ".")
 			if err != nil {
 				return err
 			}
@@ -46,6 +48,15 @@ func newPushCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if requireSigned || strings.TrimSpace(allowedSignersPath) != "" {
+				_, localRef, _, err := resolvePushRefNames(r, branch)
+				if err != nil {
+					return err
+				}
+				if err := verifyPushSignaturePolicy(r, localRef, requireSigned, allowedSignersPath); err != nil {
+					return verificationFailureError(err)
+				}
+			}
 			if checkOnly {
 				if transport == remoteTransportGit {
 					return fmt.Errorf("push --check currently supports orchard/graft remotes only")
@@ -59,7 +70,7 @@ func newPushCmd() *cobra.Command {
 					return err
 				}
 				if err := pushLimitError(report); err != nil {
-					return err
+					return verificationFailureError(err)
 				}
 				printPushLimitSummary(cmd.OutOrStdout(), report)
 				return nil
@@ -73,7 +84,35 @@ func newPushCmd() *cobra.Command {
 
 	cmd.Flags().BoolVar(&force, "force", false, "allow non-fast-forward update")
 	cmd.Flags().BoolVar(&checkOnly, "check", false, "validate push object limits without uploading anything")
+	cmd.Flags().BoolVar(&requireSigned, "require-signed", false, "fail before push if the branch or tag being pushed is unsigned or invalid")
+	cmd.Flags().StringVar(&allowedSignersPath, "allowed-signers", "", "OpenSSH allowed_signers file for trusted pushed commit or tag keys")
 	return cmd
+}
+
+func verifyPushSignaturePolicy(r *repo.Repo, localRef string, requireSigned bool, allowedSignersPath string) error {
+	switch {
+	case strings.HasPrefix(localRef, "refs/heads/"):
+		results, err := collectSignatureResultsFromRef(r, localRef, 100, allowedSignersPath)
+		if err != nil {
+			return err
+		}
+		if !signatureResultsOK(results, requireSigned) {
+			return signatureVerificationError(results, requireSigned)
+		}
+		return nil
+	case strings.HasPrefix(localRef, "refs/tags/"):
+		name := strings.TrimPrefix(localRef, "refs/tags/")
+		result, err := verifyTagSignatureForCLI(r, name, allowedSignersPath)
+		if err != nil {
+			return err
+		}
+		if !tagVerificationOK(result, requireSigned) {
+			return tagVerificationError(result, requireSigned)
+		}
+		return nil
+	default:
+		return fmt.Errorf("signature policy supports refs/heads/* and refs/tags/* only")
+	}
 }
 
 func pushBranchGot(cmd *cobra.Command, r *repo.Repo, remoteName, remoteURL, branch string, force bool) error {
@@ -101,7 +140,16 @@ func pushBranchGot(cmd *cobra.Command, r *repo.Repo, remoteName, remoteURL, bran
 	}
 
 	// Load hooks config and run pre-push hooks.
-	hooksCfg, _ := repo.LoadHooksConfig(r.RootDir, nil)
+	hooksCfg, err := r.LoadHooksConfig(nil)
+	if err != nil {
+		return err
+	}
+	hookOptions := repo.HookRunOptions{
+		Context:       cmd.Context(),
+		Stdout:        cmd.OutOrStdout(),
+		Stderr:        cmd.ErrOrStderr(),
+		WarningWriter: cmd.ErrOrStderr(),
+	}
 	prePushHooks := hooksCfg.ForPoint("pre-push")
 	if len(prePushHooks) > 0 {
 		payload, _ := json.Marshal(repo.PrePushPayload{
@@ -113,7 +161,7 @@ func pushBranchGot(cmd *cobra.Command, r *repo.Repo, remoteName, remoteURL, bran
 				{LocalRef: localRef, RemoteRef: remoteRef, LocalHash: string(localHash), RemoteHash: string(remoteHash)},
 			},
 		})
-		if err := repo.RunHooksForPoint(cmd.Context(), r.RootDir, prePushHooks, payload, true); err != nil {
+		if err := repo.RunHooksForPointWithOptions(cmd.Context(), r.RootDir, prePushHooks, payload, true, hookOptions); err != nil {
 			return err
 		}
 	}
@@ -204,7 +252,7 @@ func pushBranchGot(cmd *cobra.Command, r *repo.Repo, remoteName, remoteURL, bran
 			Refs:          []repo.HookRefUpdate{{Name: remoteRef, Old: string(remoteHash), New: string(finalHash)}},
 			ObjectsPushed: uploaded,
 		})
-		_ = repo.RunHooksForPoint(cmd.Context(), r.RootDir, postPushHooks, payload, false)
+		_ = repo.RunHooksForPointWithOptions(cmd.Context(), r.RootDir, postPushHooks, payload, false, hookOptions)
 	}
 
 	// Push LFS objects referenced by the commit.
@@ -262,16 +310,27 @@ func pushObjectsChunked(ctx context.Context, client *remote.Client, objects []re
 		return 0, nil
 	}
 
-	chunk := make([]remote.ObjectRecord, 0, pushChunkObjectLimit)
+	limits := effectivePushChunkLimits(client)
+	chunk := make([]remote.ObjectRecord, 0, limits.objectCount)
 	chunkBytes := 0
 	uploaded := 0
 	usePack := shouldUsePackPush(client)
+	useResumablePack := shouldUseResumablePackPush(client)
 
 	flush := func() error {
 		if len(chunk) == 0 {
 			return nil
 		}
 		if usePack {
+			if useResumablePack {
+				if _, err := client.PushObjectsPackResumable(ctx, chunk, remote.ResumablePackUploadOptions{}); err != nil {
+					return err
+				}
+				uploaded += len(chunk)
+				chunk = chunk[:0]
+				chunkBytes = 0
+				return nil
+			}
 			if err := client.PushObjectsPack(ctx, chunk); err != nil {
 				if !remote.IsPackUploadUnsupported(err) {
 					return err
@@ -294,11 +353,11 @@ func pushObjectsChunked(ctx context.Context, client *remote.Client, objects []re
 	}
 
 	for _, obj := range objects {
-		if len(obj.Data) > pushObjectByteLimit {
-			return uploaded, fmt.Errorf("object %s exceeds %d-byte push limit", shortHash(obj.Hash), pushObjectByteLimit)
+		if len(obj.Data) > limits.objectBytes {
+			return uploaded, fmt.Errorf("object %s exceeds %d-byte push limit", shortHash(obj.Hash), limits.objectBytes)
 		}
 		recBytes := len(obj.Data) + 128
-		if len(chunk) > 0 && (len(chunk) >= pushChunkObjectLimit || chunkBytes+recBytes > pushChunkByteLimit) {
+		if len(chunk) > 0 && (len(chunk) >= limits.objectCount || chunkBytes+recBytes > limits.payloadBytes) {
 			if err := flush(); err != nil {
 				return uploaded, err
 			}
@@ -312,6 +371,37 @@ func pushObjectsChunked(ctx context.Context, client *remote.Client, objects []re
 	return uploaded, nil
 }
 
+type pushChunkLimits struct {
+	objectCount  int
+	payloadBytes int
+	objectBytes  int
+}
+
+func effectivePushChunkLimits(client *remote.Client) pushChunkLimits {
+	limits := pushChunkLimits{
+		objectCount:  pushChunkObjectLimit,
+		payloadBytes: pushChunkByteLimit,
+		objectBytes:  pushObjectByteLimit,
+	}
+	if client == nil {
+		return limits
+	}
+	serverLimits := client.ServerLimits()
+	if serverLimits == nil {
+		return limits
+	}
+	if serverLimits.MaxBatch > 0 && serverLimits.MaxBatch < limits.objectCount {
+		limits.objectCount = serverLimits.MaxBatch
+	}
+	if serverLimits.MaxPayload > 0 && serverLimits.MaxPayload < limits.payloadBytes {
+		limits.payloadBytes = serverLimits.MaxPayload
+	}
+	if serverLimits.MaxObject > 0 && serverLimits.MaxObject < limits.objectBytes {
+		limits.objectBytes = serverLimits.MaxObject
+	}
+	return limits
+}
+
 func shouldUsePackPush(client *remote.Client) bool {
 	if client == nil {
 		return false
@@ -321,4 +411,12 @@ func shouldUsePackPush(client *remote.Client) bool {
 		return true
 	}
 	return caps.Has(remote.CapPack) && caps.Has(remote.CapZstd)
+}
+
+func shouldUseResumablePackPush(client *remote.Client) bool {
+	if client == nil {
+		return false
+	}
+	caps := client.ServerCapabilities()
+	return caps != nil && caps.Has(remote.CapPack) && caps.Has(remote.CapZstd) && caps.Has(remote.CapResumablePack)
 }

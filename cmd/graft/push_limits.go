@@ -66,6 +66,9 @@ func collectPushLimitReport(ctx context.Context, r *repo.Repo, pushTarget, local
 		if err != nil {
 			return nil, err
 		}
+		if limits := client.ServerLimits(); limits != nil && limits.MaxObject > 0 && int64(limits.MaxObject) < report.LimitBytes {
+			report.LimitBytes = int64(limits.MaxObject)
+		}
 		if remoteRef != "" {
 			report.RemoteHash = remoteRefs[remoteRef]
 		}

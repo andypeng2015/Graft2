@@ -1,5 +1,85 @@
 # Changelog
 
+## v0.10.0
+
+### Release Readiness
+
+Graft now has first-class release tooling and CI gates for producing auditable
+artifacts.
+
+- `graft release` can generate and verify SHA-256 manifests, SPDX JSON SBOMs,
+  provenance statements, artifact signatures, and changelog preflight checks.
+- Tag releases build Linux, macOS, and Windows binaries with embedded version,
+  commit, and build-time metadata.
+- Release workflows run the full test suite, race detector, tier-1 parser fuzz
+  smoke test, remote protocol conformance checks, and `go vet`.
+- Performance workflows and scripts generate benchmark artifacts, fixture data,
+  and machine-readable timing summaries.
+
+### Diagnostics and Automation Contracts
+
+- Added `graft doctor` with repository diagnostics, global install preflight,
+  redacted support bundles, repair guidance, and JSON output.
+- Added stable CLI exit-code classes for usage, conflict, verification, auth,
+  network, and repository-repair failures.
+- Added `schemaVersion` to command JSON outputs and expanded JSON coverage
+  across version, status, config, auth, remote, reflog, release, doctor, and
+  coordination commands.
+- Added `graft protocol --json` as the machine-readable contract for Orchard
+  and third-party remote implementations.
+- Added `graft completion`, `graft man`, and `graft workflows` helpers for
+  shell integration, man-page generation, and common workflow recovery guides.
+
+### Repository Hardening
+
+- Added `.graft/config` repository format metadata, legacy migration support,
+  object-hash policy checks, and diagnostics for unsupported future formats.
+- Added repository-level locking, transaction records, atomic writes, stale
+  lock repair, and interrupted-operation repair commands.
+- Hardened repository path handling against absolute paths, parent traversal,
+  case-folding collisions, symlink traversal, and non-portable path elements.
+- Improved verify/doctor coverage for refs, indexes, reflogs, transactions,
+  locks, git shadow state, and coordination feed roots.
+- Added signed tag and commit verification paths plus release artifact signing
+  metadata.
+
+### Remote, Auth, and Protocol
+
+- Added resumable-pack capability metadata, protocol contract tests, response
+  size limits, pagination guards, and native client conformance smoke tests.
+- Hardened remote URL handling by rejecting insecure non-local HTTP and
+  `git://` remotes unless explicitly allowed.
+- Expanded auth with host/profile precedence, SSH login and bootstrap flows,
+  token-safe diagnostics, and credential redaction.
+- Added push signature requirements and allowed-signers verification support.
+
+### Coordination and Governed Execution
+
+- Added coord session recovery, stale-agent cleanup, richer coord JSON output,
+  coordination analysis helpers, and stricter mutation contracts.
+- Added coordd execution traces, spawn trace export, phase grouping,
+  heartbeat collapse, and redacted support-safe trace views.
+- Added sandbox backend health checks for container, bubblewrap, and direct
+  host execution, including selected/effective runtime profile diagnostics.
+- Added check-only governed execution, post-action effects, and improved policy
+  bundle/runtime reporting.
+
+### Core CLI and Engine Improvements
+
+- Added `graft archive`, expanded grep, remote, reflog, status, workon,
+  workspace, merge, repair, verify, tag, and config behavior with focused
+  regression tests.
+- Added parser-pool extraction and tier-1 fuzz seeds for entity reconstruction.
+- Improved merge confidence reporting, object serialization validation, git
+  shadow commit mapping, checkout/fetch/reset/rebase/stash robustness, and
+  module lock/config handling.
+
+### Requires
+
+- Go 1.25+
+- gotreesitter v0.22.5+
+- m31labs.dev/arbiter v1.9.0+
+
 ## v0.7.0
 
 ### Full Git Interop

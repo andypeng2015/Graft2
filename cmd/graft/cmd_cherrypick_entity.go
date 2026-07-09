@@ -19,7 +19,7 @@ func newCherryPickCmd() *cobra.Command {
 		Short: "Cherry-pick a commit, optionally scoped to one entity",
 		Args:  cobra.RangeArgs(0, 1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			r, err := openRepo(".")
+			r, err := openRepoForCommand(cmd, ".")
 			if err != nil {
 				return err
 			}

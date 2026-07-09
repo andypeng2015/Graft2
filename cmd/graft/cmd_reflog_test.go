@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
@@ -49,6 +50,55 @@ func TestReflogCmd_Basic(t *testing.T) {
 	// Should contain the ref name and reason.
 	if !strings.Contains(output, "refs/heads/main") {
 		t.Errorf("output should contain refs/heads/main, got:\n%s", output)
+	}
+}
+
+func TestReflogCmd_JSON(t *testing.T) {
+	dir := t.TempDir()
+	r, err := repo.Init(dir)
+	if err != nil {
+		t.Fatalf("repo.Init: %v", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if err := r.Add([]string{"main.go"}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if _, err := r.Commit("initial", "alice"); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+
+	restore := chdirReflog(t, dir)
+	defer restore()
+
+	var out bytes.Buffer
+	cmd := newReflogCmd()
+	cmd.SilenceUsage = true
+	cmd.SetOut(&out)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"--json"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute --json: %v", err)
+	}
+
+	var result JSONReflogOutput
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+		t.Fatalf("json.Unmarshal: %v\nraw: %s", err, out.String())
+	}
+	if result.SchemaVersion != JSONSchemaVersion {
+		t.Fatalf("schemaVersion = %d, want %d", result.SchemaVersion, JSONSchemaVersion)
+	}
+	if result.Ref != "refs/heads/main" {
+		t.Fatalf("ref = %q, want refs/heads/main", result.Ref)
+	}
+	if len(result.Entries) != 1 {
+		t.Fatalf("entries len = %d, want 1: %+v", len(result.Entries), result.Entries)
+	}
+	if result.Entries[0].Ref != "refs/heads/main" || result.Entries[0].NewHash == "" || result.Entries[0].ShortHash == "" {
+		t.Fatalf("unexpected entry: %+v", result.Entries[0])
 	}
 }
 
@@ -105,6 +155,64 @@ func TestReflogCmd_EntityFilter(t *testing.T) {
 	}
 }
 
+func TestReflogCmd_JSONEntityFilter(t *testing.T) {
+	dir := t.TempDir()
+	r, err := repo.Init(dir)
+	if err != nil {
+		t.Fatalf("repo.Init: %v", err)
+	}
+
+	src1 := "package main\n\nfunc LoginHandler() string { return \"login\" }\n\nfunc ProcessOrder() int { return 42 }\n"
+	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte(src1), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if err := r.Add([]string{"main.go"}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if _, err := r.Commit("initial", "alice"); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+
+	src2 := "package main\n\nfunc LoginHandler() string { return \"updated\" }\n\nfunc ProcessOrder() int { return 42 }\n"
+	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte(src2), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if err := r.Add([]string{"main.go"}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if _, err := r.Commit("update login", "bob"); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+
+	restore := chdirReflog(t, dir)
+	defer restore()
+
+	var out bytes.Buffer
+	cmd := newReflogCmd()
+	cmd.SilenceUsage = true
+	cmd.SetOut(&out)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"--entity", "declaration:*", "--json"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute --entity --json: %v", err)
+	}
+
+	var result JSONReflogOutput
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+		t.Fatalf("json.Unmarshal: %v\nraw: %s", err, out.String())
+	}
+	if result.SchemaVersion != JSONSchemaVersion {
+		t.Fatalf("schemaVersion = %d, want %d", result.SchemaVersion, JSONSchemaVersion)
+	}
+	if len(result.Entries) == 0 {
+		t.Fatalf("entries empty, want entity-filtered reflog entries")
+	}
+	if len(result.Entries[0].Entities) == 0 {
+		t.Fatalf("first entry missing entities: %+v", result.Entries[0])
+	}
+}
+
 func TestReflogCmd_EntityFilterNoMatch(t *testing.T) {
 	dir := t.TempDir()
 	r, err := repo.Init(dir)
@@ -141,6 +249,59 @@ func TestReflogCmd_EntityFilterNoMatch(t *testing.T) {
 	// Should produce empty output since no entities match.
 	if strings.TrimSpace(out.String()) != "" {
 		t.Errorf("expected empty output for non-matching entity filter, got:\n%s", out.String())
+	}
+}
+
+func TestReflogCmd_HeadJSONShowsCheckoutEntries(t *testing.T) {
+	dir := t.TempDir()
+	r, err := repo.Init(dir)
+	if err != nil {
+		t.Fatalf("repo.Init: %v", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\n\nfunc main() {}\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if err := r.Add([]string{"main.go"}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	head, err := r.Commit("initial", "alice")
+	if err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	if err := r.CreateBranch("feature", head); err != nil {
+		t.Fatalf("CreateBranch(feature): %v", err)
+	}
+	if err := r.Checkout("feature"); err != nil {
+		t.Fatalf("Checkout(feature): %v", err)
+	}
+
+	restore := chdirReflog(t, dir)
+	defer restore()
+
+	var out bytes.Buffer
+	cmd := newReflogCmd()
+	cmd.SilenceUsage = true
+	cmd.SetOut(&out)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"--head", "--json"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute --head --json: %v", err)
+	}
+
+	var result JSONReflogOutput
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+		t.Fatalf("json.Unmarshal: %v\nraw: %s", err, out.String())
+	}
+	if result.Ref != "HEAD" {
+		t.Fatalf("ref = %q, want HEAD", result.Ref)
+	}
+	if len(result.Entries) != 1 {
+		t.Fatalf("entries len = %d, want 1: %+v", len(result.Entries), result.Entries)
+	}
+	if result.Entries[0].Reason != "checkout: moving from main to feature" {
+		t.Fatalf("HEAD reflog reason = %q", result.Entries[0].Reason)
 	}
 }
 

@@ -95,7 +95,7 @@ func TestIntegration_SwitchNoArgsNoFlag(t *testing.T) {
 	}
 }
 
-func TestIntegration_SwitchDashNotSupported(t *testing.T) {
+func TestIntegration_SwitchDashReturnsPreviousBranch(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}
@@ -103,13 +103,21 @@ func TestIntegration_SwitchDashNotSupported(t *testing.T) {
 	dir := initRepo(t)
 
 	commitFile(t, dir, "base.txt", "base content\n", "initial commit")
+	mustRunGraft(t, dir, "branch", "feature")
+	mustRunGraft(t, dir, "switch", "feature")
 
-	// Switch with "-" should report not yet supported.
-	out, err := runGraft(t, dir, "switch", "-")
-	if err == nil {
-		t.Fatal("expected error when switching with -")
+	out := mustRunGraft(t, dir, "switch", "-")
+	if !strings.Contains(out, "switched to branch 'main'") {
+		t.Fatalf("unexpected switch - output: %s", out)
 	}
-	if !strings.Contains(out, "not yet supported") {
-		t.Fatalf("expected 'not yet supported' message, got: %s", out)
+
+	out = mustRunGraft(t, dir, "switch", "-")
+	if !strings.Contains(out, "switched to branch 'feature'") {
+		t.Fatalf("unexpected second switch - output: %s", out)
+	}
+
+	out = mustRunGraft(t, dir, "checkout", "-")
+	if !strings.Contains(out, "switched to branch 'main'") {
+		t.Fatalf("unexpected checkout - output: %s", out)
 	}
 }

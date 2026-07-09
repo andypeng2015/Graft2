@@ -39,7 +39,7 @@ func newPublishCmd() *cobra.Command {
 		Short: "Create a remote repo on Orchard, set origin, and push current branch",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			r, err := openRepo(".")
+			r, err := openRepoForCommand(cmd, ".")
 			if err != nil {
 				return err
 			}

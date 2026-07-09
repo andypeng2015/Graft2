@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -56,6 +57,761 @@ func TestWriteJSON_Struct(t *testing.T) {
 	}
 }
 
+func TestWriteJSONDefaultsSchemaVersion(t *testing.T) {
+	var buf bytes.Buffer
+	data := JSONStatusOutput{
+		Branch:    "main",
+		NoCommits: true,
+	}
+	if err := writeJSON(&buf, data); err != nil {
+		t.Fatalf("writeJSON: %v", err)
+	}
+
+	var parsed JSONStatusOutput
+	if err := json.Unmarshal(buf.Bytes(), &parsed); err != nil {
+		t.Fatalf("output is not valid JSON: %v\nraw: %s", err, buf.String())
+	}
+	if parsed.SchemaVersion != JSONSchemaVersion {
+		t.Fatalf("schemaVersion = %d, want %d", parsed.SchemaVersion, JSONSchemaVersion)
+	}
+}
+
+func TestJSONTopLevelContractsHaveSchemaVersion(t *testing.T) {
+	contracts := []any{
+		JSONVersionOutput{},
+		JSONProtocolOutput{},
+		JSONRemoteOutput{},
+		JSONWorkspacesOutput{},
+		JSONWorkspaceMutationOutput{},
+		JSONAuthDoctorOutput{},
+		JSONCoorddGuardDoctorOutput{},
+		JSONCoorddEventOutput{},
+		JSONCoorddTailOutput{},
+		JSONCoorddSnapshotOutput{},
+		JSONCoorddActionDecisionOutput{},
+		JSONCoorddExecOutput{},
+		JSONMCPExecOutput{},
+		JSONCoorddSpawnOutput{},
+		JSONCoorddSpawnRecordOutput{},
+		JSONCoorddSpawnViewOutput{},
+		JSONCoorddSpawnTraceRawOutput{},
+		JSONCoorddSpawnTraceOutput{},
+		JSONCoorddSpawnsOutput{},
+		JSONCoorddGuardShowOutput{},
+		JSONCoorddGuardOverridesOutput{},
+		JSONWorkonOutput{},
+		JSONContextOutput{},
+		JSONStatusOutput{},
+		JSONCoordStatusOutput{},
+		JSONCoordAgentsOutput{},
+		JSONCoordClaimsOutput{},
+		JSONCoordFeedOutput{},
+		JSONCoordDecisionsOutput{},
+		JSONCoordHeartbeatOutput{},
+		JSONCoordSessionsOutput{},
+		JSONCoordPresenceOutput{},
+		JSONCoordReadingOutput{},
+		JSONCoordNotesOutput{},
+		JSONCoordNoteOutput{},
+		JSONCoordNoteDeleteOutput{},
+		JSONCoordTasksOutput{},
+		JSONCoordTaskOutput{},
+		JSONCoordTaskClaimOutput{},
+		JSONCoordTaskDeleteOutput{},
+		JSONCoordPlansOutput{},
+		JSONCoordPlanOutput{},
+		JSONCoordPlanDeleteOutput{},
+		JSONCoordWatchOutput{},
+		JSONCoordUnwatchOutput{},
+		JSONCoordResolveOutput{},
+		JSONCoordPublishOutput{},
+		JSONCoordImpactOutput{},
+		JSONCoordDiffOutput{},
+		JSONCoordXrefsOutput{},
+		JSONCoordGraphOutput{},
+		JSONCoordCheckOutput{},
+		JSONCoordCleanupStaleOutput{},
+		JSONDiffOutput{},
+		JSONLogOutput{},
+		JSONReflogOutput{},
+		JSONMergeOutput{},
+		JSONShowOutput{},
+		JSONBlameOutput{},
+		JSONBatchBlameOutput{},
+		JSONConflictsOutput{},
+		JSONVerifyOutput{},
+		JSONTagVerifyOutput{},
+		JSONDoctorOutput{},
+		JSONDoctorGlobalOutput{},
+		JSONDoctorBundleOutput{},
+		JSONRepairGitShadowOutput{},
+		JSONRepairLockOutput{},
+		JSONRepairTransactionOutput{},
+		JSONRepairMigrateConfigOutput{},
+		JSONVerifyPushLimitsOutput{},
+		JSONReleaseManifestOutput{},
+		JSONReleaseManifestVerificationOutput{},
+		JSONReleaseCheckOutput{},
+		JSONReleaseSignOutput{},
+		JSONReleaseVerifySignatureOutput{},
+		JSONLineGrepOutput{},
+		JSONEntitySearchOutput{},
+		JSONStructuralGrepOutput{},
+		JSONHistoryGrepOutput{},
+		checkIgnoreOutput{},
+	}
+
+	for _, contract := range contracts {
+		t.Run(reflect.TypeOf(contract).Name(), func(t *testing.T) {
+			fields := jsonFieldSignatures(reflect.TypeOf(contract))
+			if got := fields["schemaVersion"]; got != "int" {
+				t.Fatalf("schemaVersion signature = %q, want int", got)
+			}
+		})
+	}
+}
+
+func TestJSONCompatibilityMinimumContracts(t *testing.T) {
+	contracts := map[string]struct {
+		sample any
+		fields map[string]string
+	}{
+		"version": {JSONVersionOutput{}, map[string]string{
+			"schemaVersion":                  "int",
+			"version":                        "string",
+			"commit":                         "string",
+			"buildTime":                      "string",
+			"goVersion":                      "string",
+			"supportedRepositoryFormat":      "int",
+			"supportedRemoteProtocolVersion": "string",
+		}},
+		"protocol": {JSONProtocolOutput{}, map[string]string{
+			"schemaVersion":       "int",
+			"protocolVersion":     "string",
+			"documentation":       "string",
+			"baseUrlFormat":       "string",
+			"defaultOrchardHost":  "string",
+			"hashFunction":        "string",
+			"headers":             "[]ProtocolHeader",
+			"clientCapabilities":  "[]string",
+			"definedCapabilities": "[]ProtocolCapability",
+			"transports":          "[]ProtocolTransport",
+			"serverLimits":        "[]ProtocolLimit",
+			"responseLimits":      "[]ProtocolResponseLimit",
+			"endpoints":           "[]ProtocolEndpoint",
+			"objectTypes":         "[]string",
+			"errorShape":          "ProtocolErrorShape",
+		}},
+		"remote": {JSONRemoteOutput{}, map[string]string{
+			"schemaVersion": "int",
+			"remotes":       "[]JSONRemoteEntry",
+		}},
+		"workspaces": {JSONWorkspacesOutput{}, map[string]string{
+			"schemaVersion": "int",
+			"workspaces":    "map[string]string",
+		}},
+		"workspaceMutation": {JSONWorkspaceMutationOutput{}, map[string]string{
+			"schemaVersion": "int",
+			"status":        "string",
+			"name":          "string",
+			"path":          "string",
+		}},
+		"authDoctor": {JSONAuthDoctorOutput{}, map[string]string{
+			"schemaVersion":     "int",
+			"ok":                "bool",
+			"selectedHost":      "string",
+			"configPath":        "string",
+			"configFilePresent": "bool",
+			"configFileMode":    "string",
+			"configFileSecure":  "bool",
+			"tokenSet":          "bool",
+			"tokenSource":       "string",
+			"tokenExpiryKnown":  "bool",
+			"tokenExpiresAt":    "string",
+			"tokenExpired":      "bool",
+			"hosts":             "[]JSONAuthDoctorHost",
+			"diagnostics":       "[]JSONRepositoryDiagnostic",
+		}},
+		"coorddGuardDoctor": {JSONCoorddGuardDoctorOutput{}, map[string]string{
+			"schemaVersion": "int",
+			"ok":            "bool",
+			"health":        "SandboxBackendHealthReport",
+			"diagnostics":   "[]JSONRepositoryDiagnostic",
+		}},
+		"coorddEvent": {JSONCoorddEventOutput{}, map[string]string{
+			"schemaVersion": "int",
+			"id":            "string",
+			"type":          "string",
+			"timestamp":     "Time",
+		}},
+		"coorddTail": {JSONCoorddTailOutput{}, map[string]string{
+			"schemaVersion": "int",
+			"events":        "[]Event",
+		}},
+		"coorddSnapshot": {JSONCoorddSnapshotOutput{}, map[string]string{
+			"schemaVersion": "int",
+			"status":        "string",
+			"id":            "string",
+			"created_at":    "Time",
+			"summary":       "WorktreeSummary",
+			"entries":       "[]SnapshotEntry",
+		}},
+		"coorddActionDecision": {JSONCoorddActionDecisionOutput{}, map[string]string{
+			"schemaVersion": "int",
+			"input":         "ActionPolicyInput",
+			"decision":      "*ActionPolicyDecision",
+		}},
+		"coorddExec": {JSONCoorddExecOutput{}, map[string]string{
+			"schemaVersion":     "int",
+			"decision":          "*ActionPolicyDecision",
+			"exit_code":         "int",
+			"backend":           "string",
+			"requested_profile": "RuntimeProfile",
+			"effective_profile": "RuntimeProfile",
+		}},
+		"mcpExec": {JSONMCPExecOutput{}, map[string]string{
+			"schemaVersion": "int",
+			"input":         "ActionPolicyInput",
+			"decision":      "*ActionPolicyDecision",
+			"allowed":       "bool",
+			"exec":          "*ExecResult",
+			"stdout":        "string",
+			"stderr":        "string",
+			"exit_code":     "int",
+			"status":        "string",
+			"error":         "string",
+		}},
+		"coorddSpawn": {JSONCoorddSpawnOutput{}, map[string]string{
+			"schemaVersion": "int",
+			"action_input":  "ActionPolicyInput",
+			"spawn_input":   "SpawnPolicyInput",
+			"record":        "*SpawnRecord",
+			"status":        "string",
+			"exit_code":     "int",
+			"error":         "string",
+		}},
+		"coorddSpawnRecord": {JSONCoorddSpawnRecordOutput{}, map[string]string{
+			"schemaVersion": "int",
+			"id":            "string",
+			"name":          "string",
+			"status":        "string",
+			"started_at":    "Time",
+		}},
+		"coorddSpawnView": {JSONCoorddSpawnViewOutput{}, map[string]string{
+			"schemaVersion": "int",
+			"record":        "*SpawnRecord",
+			"lease":         "*SpawnLease",
+		}},
+		"coorddSpawnTraceRaw": {JSONCoorddSpawnTraceRawOutput{}, map[string]string{
+			"schemaVersion": "int",
+			"record":        "*SpawnRecord",
+			"lease":         "*SpawnLease",
+			"execs":         "[]ExecTrace",
+			"events":        "[]Event",
+		}},
+		"coorddSpawnTrace": {JSONCoorddSpawnTraceOutput{}, map[string]string{
+			"schemaVersion":        "int",
+			"record":               "*SpawnRecord",
+			"execs":                "[]ExecTraceView",
+			"phases":               "[]TracePhaseView",
+			"raw_event_count":      "int",
+			"rendered_event_count": "int",
+		}},
+		"coorddSpawns": {JSONCoorddSpawnsOutput{}, map[string]string{
+			"schemaVersion": "int",
+			"spawns":        "[]SpawnRecord",
+		}},
+		"coorddGuardShow": {JSONCoorddGuardShowOutput{}, map[string]string{
+			"schemaVersion": "int",
+			"config":        "*GuardConfig",
+			"overrides":     "[]coorddRuleOverrideView",
+			"bundle_ids":    "map[string]string",
+			"policies":      "map[string]PolicyBundleInfo",
+		}},
+		"coorddGuardOverrides": {JSONCoorddGuardOverridesOutput{}, map[string]string{
+			"schemaVersion": "int",
+			"overrides":     "[]coorddRuleOverrideView",
+		}},
+		"workon": {JSONWorkonOutput{}, map[string]string{
+			"schemaVersion": "int",
+			"status":        "string",
+			"agent_id":      "string",
+			"agent_name":    "string",
+			"workspace":     "string",
+			"mode":          "string",
+			"scope":         "string",
+			"notify":        "string",
+			"agents":        "int",
+			"claims":        "int",
+			"discovered":    "map[string]string",
+			"recovered":     "bool",
+		}},
+		"context": {JSONContextOutput{}, map[string]string{
+			"schemaVersion": "int",
+			"target":        "ContextSection",
+			"dependencies":  "[]ContextSection",
+			"dependents":    "[]ContextSection",
+			"budget_tokens": "int",
+			"used_tokens":   "int",
+			"truncated":     "bool",
+		}},
+		"status": {JSONStatusOutput{}, map[string]string{
+			"schemaVersion":  "int",
+			"branch":         "string",
+			"noCommits":      "bool",
+			"shadow_desync":  "bool",
+			"shadow_state":   "string",
+			"shadow_message": "string",
+			"shadow_repair":  "string",
+			"conflicts":      "[]JSONStatusEntry",
+			"staged":         "[]JSONStatusEntry",
+			"unstaged":       "[]JSONStatusEntry",
+			"untracked":      "[]string",
+		}},
+		"coordAgents": {JSONCoordAgentsOutput{}, map[string]string{
+			"schemaVersion": "int",
+			"agents":        "[]AgentInfo",
+		}},
+		"coordStatus": {JSONCoordStatusOutput{}, map[string]string{
+			"schemaVersion": "int",
+			"agents":        "int",
+			"claims":        "int",
+			"conflicts":     "int",
+			"feed_count":    "int",
+			"notes":         "int",
+			"tasks":         "int",
+			"tasks_pending": "int",
+			"tasks_active":  "int",
+		}},
+		"coordClaims": {JSONCoordClaimsOutput{}, map[string]string{
+			"schemaVersion": "int",
+			"claims":        "[]JSONCoordClaim",
+		}},
+		"coordFeed": {JSONCoordFeedOutput{}, map[string]string{
+			"schemaVersion": "int",
+			"events":        "[]JSONCoordFeedEntry",
+		}},
+		"coordDecisions": {JSONCoordDecisionsOutput{}, map[string]string{
+			"schemaVersion": "int",
+			"decisions":     "[]DecisionGraph",
+		}},
+		"coordHeartbeat": {JSONCoordHeartbeatOutput{}, map[string]string{
+			"schemaVersion": "int",
+			"status":        "string",
+			"agent_id":      "string",
+		}},
+		"coordSessions": {JSONCoordSessionsOutput{}, map[string]string{
+			"schemaVersion": "int",
+			"sessions":      "[]Session",
+		}},
+		"coordPresence": {JSONCoordPresenceOutput{}, map[string]string{
+			"schemaVersion": "int",
+			"entries":       "[]PresenceEntry",
+		}},
+		"coordReading": {JSONCoordReadingOutput{}, map[string]string{
+			"schemaVersion": "int",
+			"status":        "string",
+			"file":          "string",
+			"agent_id":      "string",
+			"entity":        "string",
+		}},
+		"coordNotes": {JSONCoordNotesOutput{}, map[string]string{
+			"schemaVersion": "int",
+			"notes":         "[]*Note",
+		}},
+		"coordNote": {JSONCoordNoteOutput{}, map[string]string{
+			"schemaVersion": "int",
+			"note":          "*Note",
+		}},
+		"coordNoteDelete": {JSONCoordNoteDeleteOutput{}, map[string]string{
+			"schemaVersion": "int",
+			"status":        "string",
+			"id":            "string",
+		}},
+		"coordTasks": {JSONCoordTasksOutput{}, map[string]string{
+			"schemaVersion": "int",
+			"tasks":         "[]JSONCoordTaskEntry",
+		}},
+		"coordTask": {JSONCoordTaskOutput{}, map[string]string{
+			"schemaVersion": "int",
+			"task":          "*Task",
+		}},
+		"coordTaskClaim": {JSONCoordTaskClaimOutput{}, map[string]string{
+			"schemaVersion": "int",
+			"status":        "string",
+			"task_id":       "string",
+			"assigned_to":   "string",
+			"task_status":   "string",
+		}},
+		"coordTaskDelete": {JSONCoordTaskDeleteOutput{}, map[string]string{
+			"schemaVersion": "int",
+			"status":        "string",
+			"id":            "string",
+		}},
+		"coordPlans": {JSONCoordPlansOutput{}, map[string]string{
+			"schemaVersion": "int",
+			"plans":         "[]*Plan",
+		}},
+		"coordPlan": {JSONCoordPlanOutput{}, map[string]string{
+			"schemaVersion": "int",
+			"plan":          "*Plan",
+		}},
+		"coordPlanDelete": {JSONCoordPlanDeleteOutput{}, map[string]string{
+			"schemaVersion": "int",
+			"status":        "string",
+			"id":            "string",
+		}},
+		"coordWatch": {JSONCoordWatchOutput{}, map[string]string{
+			"schemaVersion": "int",
+			"status":        "string",
+			"entity_key":    "string",
+			"file":          "string",
+		}},
+		"coordUnwatch": {JSONCoordUnwatchOutput{}, map[string]string{
+			"schemaVersion": "int",
+			"status":        "string",
+			"entity_key":    "string",
+		}},
+		"coordResolve": {JSONCoordResolveOutput{}, map[string]string{
+			"schemaVersion": "int",
+			"status":        "string",
+			"key_hash":      "string",
+			"to_agent":      "string",
+		}},
+		"coordPublish": {JSONCoordPublishOutput{}, map[string]string{
+			"schemaVersion": "int",
+			"status":        "string",
+			"commit_hash":   "string",
+			"agent_id":      "string",
+		}},
+		"coordImpact": {JSONCoordImpactOutput{}, map[string]string{
+			"schemaVersion": "int",
+			"workspaces":    "map[string]WorkspaceImpact",
+		}},
+		"coordDiff": {JSONCoordDiffOutput{}, map[string]string{
+			"schemaVersion": "int",
+			"agent":         "*AgentInfo",
+			"claims":        "[]ClaimInfo",
+		}},
+		"coordXrefs": {JSONCoordXrefsOutput{}, map[string]string{
+			"schemaVersion": "int",
+			"references":    "[]XrefCallSite",
+		}},
+		"coordGraph": {JSONCoordGraphOutput{}, map[string]string{
+			"schemaVersion": "int",
+			"workspaces":    "map[string]string",
+			"edges":         "[]JSONCoordGraphEdge",
+		}},
+		"coordCheck": {JSONCoordCheckOutput{}, map[string]string{
+			"schemaVersion":      "int",
+			"ok":                 "bool",
+			"active_agent_id":    "string",
+			"agents_examined":    "int",
+			"claims_examined":    "int",
+			"active_claims":      "[]JSONCoordCheckClaim",
+			"stale_agents":       "[]JSONCoordCheckAgent",
+			"unread_feed_events": "[]JSONCoordCheckFeedEvent",
+			"conflicts":          "[]JSONCoordCheckConflict",
+			"readers":            "[]JSONCoordCheckReader",
+		}},
+		"coordCleanupStale": {JSONCoordCleanupStaleOutput{}, map[string]string{
+			"schemaVersion": "int",
+			"ok":            "bool",
+			"dry_run":       "bool",
+			"removed":       "int",
+			"stale_agents":  "[]JSONCoordCheckAgent",
+		}},
+		"diff": {JSONDiffOutput{}, map[string]string{
+			"schemaVersion": "int",
+			"files":         "[]JSONDiffFile",
+			"entityChanges": "[]JSONDiffEntityChange",
+		}},
+		"log": {JSONLogOutput{}, map[string]string{
+			"schemaVersion": "int",
+			"commits":       "[]JSONLogEntry",
+		}},
+		"reflog": {JSONReflogOutput{}, map[string]string{
+			"schemaVersion": "int",
+			"ref":           "string",
+			"entries":       "[]JSONReflogEntry",
+		}},
+		"merge": {JSONMergeOutput{}, map[string]string{
+			"schemaVersion":  "int",
+			"action":         "string",
+			"source":         "string",
+			"target":         "string",
+			"isFastForward":  "bool",
+			"hasConflicts":   "bool",
+			"totalConflicts": "int",
+			"mergeCommit":    "string",
+			"files":          "[]JSONMergeFile",
+			"message":        "string",
+		}},
+		"show": {JSONShowOutput{}, map[string]string{
+			"schemaVersion": "int",
+			"hash":          "string",
+			"author":        "string",
+			"date":          "string",
+			"timestamp":     "int64",
+			"message":       "string",
+			"parents":       "[]string",
+			"changes":       "[]JSONShowChange",
+		}},
+		"blameEntity": {JSONBlameOutput{}, map[string]string{
+			"schemaVersion": "int",
+			"path":          "string",
+			"entityKey":     "string",
+			"author":        "string",
+			"commitHash":    "string",
+			"message":       "string",
+		}},
+		"blameBatch": {JSONBatchBlameOutput{}, map[string]string{
+			"schemaVersion": "int",
+			"path":          "string",
+			"entities":      "[]JSONBlameOutput",
+		}},
+		"conflicts": {JSONConflictsOutput{}, map[string]string{
+			"schemaVersion": "int",
+			"files":         "[]JSONConflictFile",
+		}},
+		"verify": {JSONVerifyOutput{}, map[string]string{
+			"schemaVersion":  "int",
+			"ok":             "bool",
+			"results":        "[]JSONVerifyResult",
+			"checked":        "int",
+			"valid":          "int",
+			"unsigned":       "int",
+			"invalid":        "int",
+			"requireSigned":  "bool",
+			"allowedSigners": "bool",
+			"looseObjects":   "int",
+			"packFiles":      "int",
+			"packObjects":    "int",
+			"diagnostics":    "[]JSONRepositoryDiagnostic",
+		}},
+		"tagVerify": {JSONTagVerifyOutput{}, map[string]string{
+			"schemaVersion":  "int",
+			"ok":             "bool",
+			"tagName":        "string",
+			"tagHash":        "string",
+			"targetHash":     "string",
+			"valid":          "bool",
+			"unsigned":       "bool",
+			"signerKey":      "string",
+			"algorithm":      "string",
+			"error":          "string",
+			"requireSigned":  "bool",
+			"allowedSigners": "bool",
+		}},
+		"doctor": {JSONDoctorOutput{}, map[string]string{
+			"schemaVersion": "int",
+			"ok":            "bool",
+			"looseObjects":  "int",
+			"packFiles":     "int",
+			"packObjects":   "int",
+			"diagnostics":   "[]JSONRepositoryDiagnostic",
+		}},
+		"doctorGlobal": {JSONDoctorGlobalOutput{}, map[string]string{
+			"schemaVersion":                  "int",
+			"ok":                             "bool",
+			"generatedAt":                    "string",
+			"version":                        "string",
+			"commit":                         "string",
+			"buildTime":                      "string",
+			"goVersion":                      "string",
+			"os":                             "string",
+			"arch":                           "string",
+			"supportedRepositoryFormat":      "int",
+			"supportedRemoteProtocolVersion": "string",
+			"git":                            "JSONDoctorGlobalTool",
+			"userConfig":                     "JSONDoctorBundleUserConfig",
+			"diagnostics":                    "[]JSONRepositoryDiagnostic",
+			"collectionErrors":               "[]JSONDoctorBundleCollectionError",
+		}},
+		"doctorBundle": {JSONDoctorBundleOutput{}, map[string]string{
+			"schemaVersion":    "int",
+			"generatedAt":      "string",
+			"repository":       "JSONDoctorBundleRepository",
+			"userConfig":       "JSONDoctorBundleUserConfig",
+			"hooks":            "JSONDoctorBundleHooks",
+			"verify":           "JSONDoctorOutput",
+			"gitShadow":        "JSONRepairGitShadowOutput",
+			"recentReflog":     "[]JSONDoctorBundleReflogEntry",
+			"environment":      "JSONDoctorBundleEnvironment",
+			"protocol":         "JSONDoctorBundleProtocol",
+			"collectionErrors": "[]JSONDoctorBundleCollectionError",
+			"redaction":        "JSONDoctorBundleRedaction",
+		}},
+		"doctorBundleProtocol": {JSONDoctorBundleProtocol{}, map[string]string{
+			"supportedRepositoryFormat":      "int",
+			"supportedRemoteProtocolVersion": "string",
+			"documentation":                  "string",
+			"clientCapabilities":             "[]string",
+			"definedCapabilities":            "[]string",
+			"serverLimitKeys":                "[]string",
+			"responseLimits":                 "[]JSONDoctorBundleProtocolResponseLimit",
+			"diagnostics":                    "[]JSONRepositoryDiagnostic",
+			"transportCount":                 "int",
+			"endpointCount":                  "int",
+		}},
+		"repairGitShadow": {JSONRepairGitShadowOutput{}, map[string]string{
+			"schemaVersion":     "int",
+			"ok":                "bool",
+			"state":             "string",
+			"message":           "string",
+			"hasGitDir":         "bool",
+			"hasFailures":       "bool",
+			"graftHead":         "string",
+			"expectedGitCommit": "string",
+			"expectedGitTree":   "string",
+			"actualGitCommit":   "string",
+			"actualGitTree":     "string",
+			"repair":            "string",
+		}},
+		"repairLock": {JSONRepairLockOutput{}, map[string]string{
+			"schemaVersion": "int",
+			"ok":            "bool",
+			"state":         "string",
+			"message":       "string",
+			"path":          "string",
+			"operation":     "string",
+			"pid":           "int",
+			"hostname":      "string",
+			"command":       "string",
+			"startedAt":     "string",
+			"stale":         "bool",
+			"cleared":       "bool",
+			"repair":        "string",
+		}},
+		"repairTransaction": {JSONRepairTransactionOutput{}, map[string]string{
+			"schemaVersion": "int",
+			"ok":            "bool",
+			"id":            "string",
+			"operation":     "string",
+			"status":        "string",
+			"startedAt":     "string",
+			"updatedAt":     "string",
+			"error":         "string",
+			"touchedRefs":   "[]JSONTransactionRefMutation",
+			"touchedFiles":  "[]string",
+			"message":       "string",
+			"repair":        "string",
+		}},
+		"repairMigrateConfig": {JSONRepairMigrateConfigOutput{}, map[string]string{
+			"schemaVersion": "int",
+			"ok":            "bool",
+			"migrated":      "bool",
+			"path":          "string",
+			"fromVersion":   "int",
+			"toVersion":     "int",
+			"message":       "string",
+		}},
+		"verifyPushLimits": {JSONVerifyPushLimitsOutput{}, map[string]string{
+			"schemaVersion":   "int",
+			"ok":              "bool",
+			"pushTarget":      "string",
+			"remote":          "string",
+			"localRef":        "string",
+			"remoteRef":       "string",
+			"localHash":       "string",
+			"remoteHash":      "string",
+			"limitBytes":      "int64",
+			"objectsExamined": "int",
+			"totalBytes":      "int64",
+			"largest":         "*JSONVerifySizedObject",
+			"blockers":        "[]JSONVerifySizedObject",
+		}},
+		"releaseManifest": {JSONReleaseManifestOutput{}, map[string]string{
+			"schemaVersion":                  "int",
+			"generatedAt":                    "string",
+			"version":                        "string",
+			"commit":                         "string",
+			"buildTime":                      "string",
+			"goVersion":                      "string",
+			"supportedRepositoryFormat":      "int",
+			"supportedRemoteProtocolVersion": "string",
+			"files":                          "[]JSONReleaseManifestFile",
+		}},
+		"releaseManifestVerification": {JSONReleaseManifestVerificationOutput{}, map[string]string{
+			"schemaVersion":  "int",
+			"ok":             "bool",
+			"manifestPath":   "string",
+			"manifestFormat": "string",
+			"baseDir":        "string",
+			"checked":        "int",
+			"matched":        "int",
+			"missing":        "int",
+			"mismatched":     "int",
+			"errors":         "int",
+			"results":        "[]JSONReleaseManifestVerificationFile",
+		}},
+		"releaseCheck": {JSONReleaseCheckOutput{}, map[string]string{
+			"schemaVersion": "int",
+			"ok":            "bool",
+			"version":       "string",
+			"changelogPath": "string",
+			"checks":        "[]JSONReleaseCheckResult",
+		}},
+		"releaseSign": {JSONReleaseSignOutput{}, map[string]string{
+			"schemaVersion":   "int",
+			"signedAt":        "string",
+			"signatureFormat": "string",
+			"payloadFormat":   "string",
+			"files":           "[]JSONReleaseSignatureFile",
+		}},
+		"releaseVerifySignature": {JSONReleaseVerifySignatureOutput{}, map[string]string{
+			"schemaVersion": "int",
+			"ok":            "bool",
+			"signaturePath": "string",
+			"baseDir":       "string",
+			"checked":       "int",
+			"valid":         "int",
+			"missing":       "int",
+			"mismatched":    "int",
+			"invalid":       "int",
+			"errors":        "int",
+			"results":       "[]JSONReleaseSignatureVerificationResult",
+		}},
+		"lineGrep": {JSONLineGrepOutput{}, map[string]string{
+			"schemaVersion": "int",
+			"results":       "[]JSONLineGrepResult",
+		}},
+		"entitySearch": {JSONEntitySearchOutput{}, map[string]string{
+			"schemaVersion": "int",
+			"results":       "[]JSONEntitySearchResult",
+		}},
+		"structuralGrep": {JSONStructuralGrepOutput{}, map[string]string{
+			"schemaVersion": "int",
+			"results":       "[]JSONStructuralGrepResult",
+			"isRewrite":     "bool",
+			"rewritten":     "[]string",
+		}},
+		"historyGrep": {JSONHistoryGrepOutput{}, map[string]string{
+			"schemaVersion": "int",
+			"results":       "[]JSONHistoryGrepResult",
+		}},
+		"checkIgnore": {checkIgnoreOutput{}, map[string]string{
+			"schemaVersion": "int",
+			"results":       "[]checkIgnoreResult",
+		}},
+	}
+
+	for name, contract := range contracts {
+		t.Run(name, func(t *testing.T) {
+			fields := jsonFieldSignatures(reflect.TypeOf(contract.sample))
+			for fieldName, wantType := range contract.fields {
+				gotType, ok := fields[fieldName]
+				if !ok {
+					t.Fatalf("field %q missing from %T", fieldName, contract.sample)
+				}
+				if gotType != wantType {
+					t.Fatalf("field %q type = %q, want %q", fieldName, gotType, wantType)
+				}
+			}
+		})
+	}
+}
+
 // TestStatusCmd_JSON tests the --json flag on the status command.
 func TestStatusCmd_JSON(t *testing.T) {
 	dir := t.TempDir()
@@ -91,6 +847,9 @@ func TestStatusCmd_JSON(t *testing.T) {
 
 	if result.Branch != "main" {
 		t.Errorf("branch = %q, want %q", result.Branch, "main")
+	}
+	if result.ShadowState != repo.GitShadowStateNoShadow {
+		t.Errorf("shadow_state = %q, want %q", result.ShadowState, repo.GitShadowStateNoShadow)
 	}
 	if !result.NoCommits {
 		t.Error("noCommits = false, want true (no commits yet)")
@@ -588,4 +1347,61 @@ func jsonTestDeclarationKey(t *testing.T, path string, source []byte, name strin
 	}
 	t.Fatalf("declaration %q not found in %s", name, path)
 	return ""
+}
+
+func jsonFieldSignatures(t reflect.Type) map[string]string {
+	if t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	fields := make(map[string]string)
+	for i := 0; i < t.NumField(); i++ {
+		field := t.Field(i)
+		if field.PkgPath != "" {
+			continue
+		}
+		name := strings.Split(field.Tag.Get("json"), ",")[0]
+		if field.Anonymous && name == "" {
+			embedded := field.Type
+			if embedded.Kind() == reflect.Pointer {
+				embedded = embedded.Elem()
+			}
+			if embedded.Kind() == reflect.Struct {
+				for embeddedName, embeddedType := range jsonFieldSignatures(embedded) {
+					fields[embeddedName] = embeddedType
+				}
+				continue
+			}
+		}
+		if name == "-" {
+			continue
+		}
+		if name == "" {
+			name = field.Name
+		}
+		fields[name] = jsonTypeSignature(field.Type)
+	}
+	return fields
+}
+
+func jsonTypeSignature(t reflect.Type) string {
+	switch t.Kind() {
+	case reflect.Bool, reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64, reflect.String:
+		return t.Kind().String()
+	case reflect.Slice, reflect.Array:
+		return "[]" + jsonTypeSignature(t.Elem())
+	case reflect.Pointer:
+		return "*" + jsonTypeSignature(t.Elem())
+	case reflect.Map:
+		return "map[" + jsonTypeSignature(t.Key()) + "]" + jsonTypeSignature(t.Elem())
+	case reflect.Struct:
+		if t.Name() != "" {
+			return t.Name()
+		}
+		return "struct"
+	default:
+		if t.Name() != "" {
+			return t.Name()
+		}
+		return t.String()
+	}
 }

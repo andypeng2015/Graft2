@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/odvcencio/graft/pkg/gitbridge"
@@ -42,7 +43,8 @@ func newInitCmd() *cobra.Command {
 				}
 				bridge.Close()
 				excludeFromGitInfoExclude(abs, ".gts/")
-				fmt.Println("Initialized graft bridge alongside existing git repository")
+				fmt.Fprintln(cmd.OutOrStdout(), "initialized graft bridge alongside existing git repository")
+				printInitNextSteps(cmd.OutOrStdout(), abs)
 				return nil
 			}
 
@@ -60,11 +62,15 @@ func newInitCmd() *cobra.Command {
 				if err := initGitShadow(abs); err != nil {
 					fmt.Fprintf(cmd.ErrOrStderr(),
 						"warning: git shadow not initialized (graft is authoritative; git is the mirror): %v\n", err)
+				} else if err := r.SetRepositoryFeature("git_shadow", true); err != nil {
+					fmt.Fprintf(cmd.ErrOrStderr(),
+						"warning: git shadow feature flag not recorded in .graft/config: %v\n", err)
 				}
 			}
 
 			fmt.Fprintf(cmd.OutOrStdout(), "initialized graft repository in %s\n",
 				filepath.Join(r.RootDir, ".graft")+string(filepath.Separator))
+			printInitNextSteps(cmd.OutOrStdout(), abs)
 			return nil
 		},
 	}
@@ -110,4 +116,54 @@ func excludeFromGitInfoExclude(repoRoot, pattern string) {
 		f.WriteString("\n")
 	}
 	f.WriteString(pattern + "\n")
+}
+
+func printInitNextSteps(out io.Writer, repoPath string) {
+	fmt.Fprintln(out, "next steps:")
+	if displayPath := initDisplayPath(repoPath); displayPath != "" {
+		fmt.Fprintf(out, "  cd %s\n", shellQuoteInitArg(displayPath))
+	}
+	fmt.Fprintln(out, "  graft status")
+	fmt.Fprintln(out, "  graft add <files>")
+	fmt.Fprintln(out, "  graft commit -m \"initial commit\"")
+}
+
+func initDisplayPath(repoPath string) string {
+	abs, err := filepath.Abs(repoPath)
+	if err != nil {
+		return repoPath
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return abs
+	}
+	if samePath(abs, cwd) {
+		return ""
+	}
+	if rel, err := filepath.Rel(cwd, abs); err == nil && rel != "." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && rel != ".." {
+		return filepath.ToSlash(rel)
+	}
+	return abs
+}
+
+func samePath(a, b string) bool {
+	aa, errA := filepath.Abs(a)
+	bb, errB := filepath.Abs(b)
+	if errA == nil {
+		a = aa
+	}
+	if errB == nil {
+		b = bb
+	}
+	return filepath.Clean(a) == filepath.Clean(b)
+}
+
+func shellQuoteInitArg(s string) string {
+	if s == "" {
+		return `""`
+	}
+	if strings.ContainsAny(s, " \t\n\"'\\$`") {
+		return strconv.Quote(s)
+	}
+	return s
 }

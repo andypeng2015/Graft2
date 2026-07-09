@@ -2,10 +2,13 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/odvcencio/graft/pkg/coord"
 	"github.com/odvcencio/graft/pkg/repo"
@@ -23,7 +26,7 @@ func newCoordCmd() *cobra.Command {
 		Short: "Multi-agent coordination dashboard and tools",
 		Long:  `View and manage shared coordination state: agents, claims, plans, notes, tasks, feed, and impact analysis.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return coordDashboard(jsonFlag, allWorkspaces)
+			return coordDashboard(cmd, jsonFlag, allWorkspaces)
 		},
 	}
 
@@ -36,6 +39,7 @@ func newCoordCmd() *cobra.Command {
 	cmd.AddCommand(newCoordFeedCmd(&jsonFlag))
 	cmd.AddCommand(newCoordImpactCmd(&jsonFlag))
 	cmd.AddCommand(newCoordCheckCmd(&jsonFlag))
+	cmd.AddCommand(newCoordCleanupStaleCmd(&jsonFlag))
 	cmd.AddCommand(newCoordDiffCmd(&jsonFlag))
 	cmd.AddCommand(newCoordXrefsCmd(&jsonFlag))
 	cmd.AddCommand(newCoordGraphCmd(&jsonFlag))
@@ -56,7 +60,17 @@ func newCoordCmd() *cobra.Command {
 
 // openCoordinator opens the repo and creates a coordinator.
 func openCoordinator() (*coord.Coordinator, *repo.Repo, error) {
-	r, err := openRepo(".")
+	return openCoordinatorWithRepoOpener(openRepo)
+}
+
+func openCoordinatorForCommand(cmd *cobra.Command) (*coord.Coordinator, *repo.Repo, error) {
+	return openCoordinatorWithRepoOpener(func(path string) (*repo.Repo, error) {
+		return openRepoForCommand(cmd, path)
+	})
+}
+
+func openCoordinatorWithRepoOpener(open func(string) (*repo.Repo, error)) (*coord.Coordinator, *repo.Repo, error) {
+	r, err := open(".")
 	if err != nil {
 		return nil, nil, fmt.Errorf("open repo: %w", err)
 	}
@@ -78,82 +92,42 @@ func readActiveAgentID(r *repo.Repo) string {
 
 // --- Dashboard ---
 
-func coordDashboard(jsonOutput bool, allWorkspaces bool) error {
+func coordDashboard(cmd *cobra.Command, jsonOutput bool, allWorkspaces bool) error {
+	out := cmd.OutOrStdout()
 	if allWorkspaces {
-		return coordDashboardAll(jsonOutput)
+		return coordDashboardAll(out, jsonOutput)
 	}
 
-	c, r, err := openCoordinator()
+	c, r, err := openCoordinatorForCommand(cmd)
 	if err != nil {
 		return err
 	}
 
-	agents, _ := c.ListAgents()
-	claims, _ := c.ListClaims()
-	feedEvents, _ := c.WalkFeed("", 100)
-	tasks, _ := c.ListTasks()
-	notes, _ := c.ListNotes()
-
-	// Count conflicts: claims by different agents on same entity
-	conflictCount := 0
-	claimsByEntity := make(map[string][]string)
-	for _, cl := range claims {
-		claimsByEntity[cl.EntityKeyHash] = append(claimsByEntity[cl.EntityKeyHash], cl.AgentName)
-	}
-	for _, holders := range claimsByEntity {
-		if len(holders) > 1 {
-			conflictCount++
-		}
-	}
-
-	// Count tasks by status.
-	taskPending, taskInProgress := 0, 0
-	for _, t := range tasks {
-		switch t.Status {
-		case "pending":
-			taskPending++
-		case "in_progress":
-			taskInProgress++
-		}
-	}
-
-	activeID := readActiveAgentID(r)
-
-	result := dashboardResult{
-		Agents:       len(agents),
-		Claims:       len(claims),
-		Conflicts:    conflictCount,
-		FeedCount:    len(feedEvents),
-		Notes:        len(notes),
-		Tasks:        len(tasks),
-		TasksPending: taskPending,
-		TasksActive:  taskInProgress,
-		ActiveID:     activeID,
-	}
+	result := coordStatusSummary(c, r)
 
 	if jsonOutput {
-		return outputJSON(result)
+		return writeJSON(out, result)
 	}
 
-	fmt.Println("Coordination Dashboard")
-	fmt.Println(strings.Repeat("-", 40))
-	fmt.Printf("  Agents:     %d\n", result.Agents)
-	fmt.Printf("  Claims:     %d\n", result.Claims)
-	fmt.Printf("  Conflicts:  %d\n", result.Conflicts)
-	fmt.Printf("  Feed:       %d event(s)\n", result.FeedCount)
-	fmt.Printf("  Notes:      %d\n", result.Notes)
-	fmt.Printf("  Tasks:      %d (%d pending, %d active)\n", result.Tasks, result.TasksPending, result.TasksActive)
-	if activeID != "" {
-		fmt.Printf("  Active as:  %s\n", activeID)
+	fmt.Fprintln(out, "Coordination Dashboard")
+	fmt.Fprintln(out, strings.Repeat("-", 40))
+	fmt.Fprintf(out, "  Agents:     %d\n", result.Agents)
+	fmt.Fprintf(out, "  Claims:     %d\n", result.Claims)
+	fmt.Fprintf(out, "  Conflicts:  %d\n", result.Conflicts)
+	fmt.Fprintf(out, "  Feed:       %d event(s)\n", result.FeedCount)
+	fmt.Fprintf(out, "  Notes:      %d\n", result.Notes)
+	fmt.Fprintf(out, "  Tasks:      %d (%d pending, %d active)\n", result.Tasks, result.TasksPending, result.TasksActive)
+	if result.ActiveID != "" {
+		fmt.Fprintf(out, "  Active as:  %s\n", result.ActiveID)
 	} else {
-		fmt.Printf("  Active as:  (not joined)\n")
+		fmt.Fprintf(out, "  Active as:  (not joined)\n")
 	}
 
 	return nil
 }
 
-func coordDashboardAll(jsonOutput bool) error {
-	result := dashboardResult{}
+func coordDashboardAll(out io.Writer, jsonOutput bool) error {
+	result := JSONCoordStatusOutput{}
 	claimsByEntity := make(map[string][]string)
 
 	if err := iterateWorkspaces(func(name string, c *coord.Coordinator) error {
@@ -199,36 +173,65 @@ func coordDashboardAll(jsonOutput bool) error {
 	}
 
 	if jsonOutput {
-		return outputJSON(result)
+		return writeJSON(out, result)
 	}
 
-	fmt.Println("Coordination Dashboard (all workspaces)")
-	fmt.Println(strings.Repeat("-", 40))
-	fmt.Printf("  Agents:     %d\n", result.Agents)
-	fmt.Printf("  Claims:     %d\n", result.Claims)
-	fmt.Printf("  Conflicts:  %d\n", result.Conflicts)
-	fmt.Printf("  Feed:       %d event(s)\n", result.FeedCount)
-	fmt.Printf("  Notes:      %d\n", result.Notes)
-	fmt.Printf("  Tasks:      %d (%d pending, %d active)\n", result.Tasks, result.TasksPending, result.TasksActive)
+	fmt.Fprintln(out, "Coordination Dashboard (all workspaces)")
+	fmt.Fprintln(out, strings.Repeat("-", 40))
+	fmt.Fprintf(out, "  Agents:     %d\n", result.Agents)
+	fmt.Fprintf(out, "  Claims:     %d\n", result.Claims)
+	fmt.Fprintf(out, "  Conflicts:  %d\n", result.Conflicts)
+	fmt.Fprintf(out, "  Feed:       %d event(s)\n", result.FeedCount)
+	fmt.Fprintf(out, "  Notes:      %d\n", result.Notes)
+	fmt.Fprintf(out, "  Tasks:      %d (%d pending, %d active)\n", result.Tasks, result.TasksPending, result.TasksActive)
 	if result.ActiveID != "" {
-		fmt.Printf("  Active as:  %s\n", result.ActiveID)
+		fmt.Fprintf(out, "  Active as:  %s\n", result.ActiveID)
 	} else {
-		fmt.Printf("  Active as:  (not joined)\n")
+		fmt.Fprintf(out, "  Active as:  (not joined)\n")
 	}
 
 	return nil
 }
 
-type dashboardResult struct {
-	Agents       int    `json:"agents"`
-	Claims       int    `json:"claims"`
-	Conflicts    int    `json:"conflicts"`
-	FeedCount    int    `json:"feed_count"`
-	Notes        int    `json:"notes"`
-	Tasks        int    `json:"tasks"`
-	TasksPending int    `json:"tasks_pending"`
-	TasksActive  int    `json:"tasks_active"`
-	ActiveID     string `json:"active_id,omitempty"`
+func coordStatusSummary(c *coord.Coordinator, r *repo.Repo) JSONCoordStatusOutput {
+	agents, _ := c.ListAgents()
+	claims, _ := c.ListClaims()
+	feedEvents, _ := c.WalkFeed("", 100)
+	tasks, _ := c.ListTasks()
+	notes, _ := c.ListNotes()
+
+	conflictCount := 0
+	claimsByEntity := make(map[string][]string)
+	for _, cl := range claims {
+		claimsByEntity[cl.EntityKeyHash] = append(claimsByEntity[cl.EntityKeyHash], cl.AgentName)
+	}
+	for _, holders := range claimsByEntity {
+		if len(holders) > 1 {
+			conflictCount++
+		}
+	}
+
+	taskPending, taskInProgress := 0, 0
+	for _, task := range tasks {
+		switch task.Status {
+		case "pending":
+			taskPending++
+		case "in_progress":
+			taskInProgress++
+		}
+	}
+
+	return JSONCoordStatusOutput{
+		Agents:       len(agents),
+		Claims:       len(claims),
+		Conflicts:    conflictCount,
+		FeedCount:    len(feedEvents),
+		Notes:        len(notes),
+		Tasks:        len(tasks),
+		TasksPending: taskPending,
+		TasksActive:  taskInProgress,
+		ActiveID:     readActiveAgentID(r),
+	}
 }
 
 // --- Agents ---
@@ -267,7 +270,7 @@ func newCoordAgentsCmd(jsonFlag *bool) *cobra.Command {
 					}
 				}
 				// Also include current repo
-				c, _, err := openCoordinator()
+				c, _, err := openCoordinatorForCommand(cmd)
 				if err == nil {
 					agents, _ := c.ListAgents()
 					// Deduplicate: skip agents already collected
@@ -282,7 +285,7 @@ func newCoordAgentsCmd(jsonFlag *bool) *cobra.Command {
 					}
 				}
 			} else {
-				c, _, err := openCoordinator()
+				c, _, err := openCoordinatorForCommand(cmd)
 				if err != nil {
 					return err
 				}
@@ -294,15 +297,15 @@ func newCoordAgentsCmd(jsonFlag *bool) *cobra.Command {
 			}
 
 			if *jsonFlag {
-				return outputJSON(allAgents)
+				return writeJSON(cmd.OutOrStdout(), JSONCoordAgentsOutput{Agents: allAgents})
 			}
 
 			if len(allAgents) == 0 {
-				fmt.Println("No active agents.")
+				fmt.Fprintln(cmd.OutOrStdout(), "No active agents.")
 				return nil
 			}
 
-			w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+			w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 4, 2, ' ', 0)
 			fmt.Fprintln(w, "ID\tNAME\tWORKSPACE\tHOST\tHEARTBEAT")
 			for _, a := range allAgents {
 				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
@@ -353,7 +356,7 @@ func newCoordClaimsCmd(jsonFlag *bool) *cobra.Command {
 					return err
 				}
 			} else {
-				c, _, err := openCoordinator()
+				c, _, err := openCoordinatorForCommand(cmd)
 				if err != nil {
 					return err
 				}
@@ -378,15 +381,19 @@ func newCoordClaimsCmd(jsonFlag *bool) *cobra.Command {
 			}
 
 			if *jsonFlag {
-				return outputJSON(allClaims)
+				jsonClaims := make([]JSONCoordClaim, 0, len(allClaims))
+				for _, claim := range allClaims {
+					jsonClaims = append(jsonClaims, coordClaimToJSON(claim.ClaimInfo, claim.SourceWorkspace))
+				}
+				return writeJSON(cmd.OutOrStdout(), JSONCoordClaimsOutput{Claims: jsonClaims})
 			}
 
 			if len(allClaims) == 0 {
-				fmt.Println("No active claims.")
+				fmt.Fprintln(cmd.OutOrStdout(), "No active claims.")
 				return nil
 			}
 
-			w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+			w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 4, 2, ' ', 0)
 			if allWorkspaces {
 				fmt.Fprintln(w, "ENTITY\tFILE\tAGENT\tMODE\tSOURCE\tSINCE")
 				for _, cl := range allClaims {
@@ -431,7 +438,7 @@ func newCoordDecisionsCmd(jsonFlag *bool) *cobra.Command {
 		Use:   "decisions",
 		Short: "Show recent local decision traces",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			_, r, err := openCoordinator()
+			_, r, err := openCoordinatorForCommand(cmd)
 			if err != nil {
 				return err
 			}
@@ -467,15 +474,15 @@ func newCoordDecisionsCmd(jsonFlag *bool) *cobra.Command {
 			}
 
 			if *jsonFlag {
-				return outputJSON(decisions)
+				return writeJSON(cmd.OutOrStdout(), JSONCoordDecisionsOutput{Decisions: decisions})
 			}
 
 			if len(decisions) == 0 {
-				fmt.Println("No decision traces.")
+				fmt.Fprintln(cmd.OutOrStdout(), "No decision traces.")
 				return nil
 			}
 
-			w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+			w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 4, 2, ' ', 0)
 			fmt.Fprintln(w, "TIME\tOUTCOME\tACTION\tENTITY\tRULE\tSOURCE")
 			for _, decision := range decisions {
 				entityDisplay := decision.EntityKey
@@ -551,7 +558,7 @@ func newCoordFeedCmd(jsonFlag *bool) *cobra.Command {
 				// Sort by timestamp (FeedHash is derived from content, not time, so
 				// we use the event order -- most recent first within each workspace).
 			} else {
-				c, _, err := openCoordinator()
+				c, _, err := openCoordinatorForCommand(cmd)
 				if err != nil {
 					return err
 				}
@@ -565,7 +572,7 @@ func newCoordFeedCmd(jsonFlag *bool) *cobra.Command {
 			}
 
 			if mine {
-				_, r, _ := openCoordinator()
+				_, r, _ := openCoordinatorForCommand(cmd)
 				if r != nil {
 					activeID := readActiveAgentID(r)
 					if activeID != "" {
@@ -581,14 +588,19 @@ func newCoordFeedCmd(jsonFlag *bool) *cobra.Command {
 			}
 
 			if *jsonFlag {
-				return outputJSON(allEvents)
+				jsonEvents := make([]JSONCoordFeedEntry, 0, len(allEvents))
+				for _, event := range allEvents {
+					jsonEvents = append(jsonEvents, coordFeedEventToJSON(event.FeedEvent, event.SourceWorkspace))
+				}
+				return writeJSON(cmd.OutOrStdout(), JSONCoordFeedOutput{Events: jsonEvents})
 			}
 
 			if len(allEvents) == 0 {
-				fmt.Println("No feed events.")
+				fmt.Fprintln(cmd.OutOrStdout(), "No feed events.")
 				return nil
 			}
 
+			out := cmd.OutOrStdout()
 			for _, ev := range allEvents {
 				prefix := ""
 				if allWorkspaces && ev.SourceWorkspace != "" {
@@ -598,21 +610,21 @@ func newCoordFeedCmd(jsonFlag *bool) *cobra.Command {
 				if len(hashDisplay) > 8 {
 					hashDisplay = hashDisplay[:8]
 				}
-				fmt.Printf("%s[%s] %s by %s", prefix, hashDisplay, ev.Event, ev.AgentName)
+				fmt.Fprintf(out, "%s[%s] %s by %s", prefix, hashDisplay, ev.Event, ev.AgentName)
 				if ev.CommitHash != "" {
 					commitDisplay := ev.CommitHash
 					if len(commitDisplay) > 8 {
 						commitDisplay = commitDisplay[:8]
 					}
-					fmt.Printf(" (commit %s)", commitDisplay)
+					fmt.Fprintf(out, " (commit %s)", commitDisplay)
 				}
-				fmt.Println()
+				fmt.Fprintln(out)
 				for _, ent := range ev.Entities {
 					breaking := ""
 					if ent.Breaking {
 						breaking = " [BREAKING]"
 					}
-					fmt.Printf("  %s %s in %s%s\n", ent.Change, ent.Key, ent.File, breaking)
+					fmt.Fprintf(out, "  %s %s in %s%s\n", ent.Change, ent.Key, ent.File, breaking)
 				}
 			}
 
@@ -626,6 +638,35 @@ func newCoordFeedCmd(jsonFlag *bool) *cobra.Command {
 	return cmd
 }
 
+func coordClaimToJSON(claim coord.ClaimInfo, sourceWorkspace string) JSONCoordClaim {
+	return JSONCoordClaim{
+		EntityKey:       claim.EntityKey,
+		EntityKeyHash:   claim.EntityKeyHash,
+		File:            claim.File,
+		Agent:           claim.Agent,
+		AgentName:       claim.AgentName,
+		Mode:            claim.Mode,
+		ClaimedAt:       claim.ClaimedAt.Format(time.RFC3339),
+		SourceWorkspace: sourceWorkspace,
+	}
+}
+
+func coordFeedEventToJSON(event coord.FeedEvent, sourceWorkspace string) JSONCoordFeedEntry {
+	return JSONCoordFeedEntry{
+		Event:           event.Event,
+		AgentID:         event.AgentID,
+		AgentName:       event.AgentName,
+		CommitHash:      event.CommitHash,
+		Entities:        event.Entities,
+		Impact:          event.Impact,
+		FeedHash:        event.FeedHash,
+		Detail:          event.Detail,
+		Digest:          event.Digest,
+		Source:          event.Source,
+		SourceWorkspace: sourceWorkspace,
+	}
+}
+
 // --- Impact ---
 
 func newCoordImpactCmd(jsonFlag *bool) *cobra.Command {
@@ -633,7 +674,7 @@ func newCoordImpactCmd(jsonFlag *bool) *cobra.Command {
 		Use:   "impact [entity-key]",
 		Short: "Run impact analysis for entity changes",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			c, _, err := openCoordinator()
+			c, _, err := openCoordinatorForCommand(cmd)
 			if err != nil {
 				return err
 			}
@@ -662,9 +703,9 @@ func newCoordImpactCmd(jsonFlag *bool) *cobra.Command {
 
 			if len(changes) == 0 {
 				if *jsonFlag {
-					return outputJSON(coord.ImpactReport{})
+					return writeJSON(cmd.OutOrStdout(), coordImpactReportToJSON(&coord.ImpactReport{}))
 				}
-				fmt.Println("No entity changes to analyze.")
+				fmt.Fprintln(cmd.OutOrStdout(), "No entity changes to analyze.")
 				return nil
 			}
 
@@ -674,26 +715,27 @@ func newCoordImpactCmd(jsonFlag *bool) *cobra.Command {
 			}
 
 			if *jsonFlag {
-				return outputJSON(report)
+				return writeJSON(cmd.OutOrStdout(), coordImpactReportToJSON(report))
 			}
 
 			if len(report.Workspaces) == 0 {
-				fmt.Println("No cross-workspace impact detected.")
+				fmt.Fprintln(cmd.OutOrStdout(), "No cross-workspace impact detected.")
 				return nil
 			}
 
+			out := cmd.OutOrStdout()
 			for ws, impact := range report.Workspaces {
-				fmt.Printf("Workspace: %s\n", ws)
+				fmt.Fprintf(out, "Workspace: %s\n", ws)
 				if len(impact.Callers) > 0 {
-					fmt.Printf("  Affected callers:\n")
+					fmt.Fprintln(out, "  Affected callers:")
 					for _, caller := range impact.Callers {
-						fmt.Printf("    %s\n", caller)
+						fmt.Fprintf(out, "    %s\n", caller)
 					}
 				}
 				if len(impact.AgentsAffected) > 0 {
-					fmt.Printf("  Agents affected:\n")
+					fmt.Fprintln(out, "  Agents affected:")
 					for _, agent := range impact.AgentsAffected {
-						fmt.Printf("    %s\n", agent)
+						fmt.Fprintf(out, "    %s\n", agent)
 					}
 				}
 			}
@@ -706,33 +748,31 @@ func newCoordImpactCmd(jsonFlag *bool) *cobra.Command {
 // --- Check ---
 
 func newCoordCheckCmd(jsonFlag *bool) *cobra.Command {
-	var quiet bool
+	var (
+		quiet      bool
+		staleAfter = coord.DefaultConfig.StaleThreshold
+	)
 
 	cmd := &cobra.Command{
 		Use:   "check",
 		Short: "Quick conflict check (hook-optimized)",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			c, r, err := openCoordinator()
+			c, r, err := openCoordinatorForCommand(cmd)
 			if err != nil {
 				return err
 			}
+			if staleAfter <= 0 {
+				return fmt.Errorf("--stale-after must be positive")
+			}
+			c.Config.StaleThreshold = staleAfter
 
 			activeID := readActiveAgentID(r)
 			claims, _ := c.ListClaims()
+			agents, _ := c.ListAgents()
+			activeClaims, staleAgents := coordCheckClaimAndAgentSummary(c, claims, agents)
+			unreadFeedEvents := coordCheckUnreadFeedEvents(c, activeID, 20)
 
-			// Find conflicts: claims on the same entity by different agents
-			type conflict struct {
-				EntityKey    string `json:"entity_key"`
-				File         string `json:"file"`
-				HeldBy       string `json:"held_by"`
-				Mode         string `json:"mode"`
-				Decision     string `json:"decision,omitempty"`
-				Reason       string `json:"reason,omitempty"`
-				Rule         string `json:"rule,omitempty"`
-				RequireForce bool   `json:"require_force,omitempty"`
-			}
-
-			var conflicts []conflict
+			var conflicts []JSONCoordCheckConflict
 			if activeID != "" {
 				// Check if any of our agent's potential claims conflict
 				for _, cl := range claims {
@@ -750,7 +790,7 @@ func newCoordCheckCmd(jsonFlag *bool) *cobra.Command {
 							Status:  "inspection_reported",
 							Message: coordDecisionMessage(req, ctx),
 						})
-						conflicts = append(conflicts, conflict{
+						conflicts = append(conflicts, JSONCoordCheckConflict{
 							EntityKey:    cl.EntityKey,
 							File:         cl.File,
 							HeldBy:       cl.AgentName,
@@ -767,65 +807,79 @@ func newCoordCheckCmd(jsonFlag *bool) *cobra.Command {
 			// Informational: other agents currently reading the code (read
 			// presence). A soft coordination signal, not a blocking conflict, so
 			// it does not affect OK or the quiet/hook exit code.
-			type readerInfo struct {
-				AgentName string `json:"agent_name"`
-				File      string `json:"file"`
-				Entity    string `json:"entity,omitempty"`
-			}
-			var readers []readerInfo
+			var readers []JSONCoordCheckReader
 			if presence, perr := c.ListPresence(); perr == nil {
 				for _, e := range coord.OtherAgentPresence(presence, activeID) {
-					readers = append(readers, readerInfo{AgentName: e.AgentName, File: e.File, Entity: e.Entity})
+					readers = append(readers, JSONCoordCheckReader{AgentName: e.AgentName, File: e.File, Entity: e.Entity})
 				}
 			}
 
-			result := struct {
-				OK        bool         `json:"ok"`
-				Conflicts []conflict   `json:"conflicts,omitempty"`
-				Readers   []readerInfo `json:"readers,omitempty"`
-			}{
-				OK:        len(conflicts) == 0,
-				Conflicts: conflicts,
-				Readers:   readers,
+			result := JSONCoordCheckOutput{
+				OK:               len(conflicts) == 0,
+				ActiveAgentID:    activeID,
+				AgentsExamined:   len(agents),
+				ClaimsExamined:   len(claims),
+				ActiveClaims:     activeClaims,
+				StaleAgents:      staleAgents,
+				UnreadFeedEvents: unreadFeedEvents,
+				Conflicts:        conflicts,
+				Readers:          readers,
 			}
 
 			if *jsonFlag {
-				return outputJSON(result)
+				return writeJSON(cmd.OutOrStdout(), result)
 			}
 
+			out := cmd.OutOrStdout()
 			if quiet {
 				if !result.OK {
-					fmt.Printf("%d conflict(s)\n", len(conflicts))
+					fmt.Fprintf(out, "%d conflict(s)\n", len(conflicts))
 					return fmt.Errorf("conflicts detected")
 				}
 				return nil
 			}
 
 			if result.OK {
-				fmt.Println("No conflicts detected.")
+				fmt.Fprintln(out, "No conflicts detected.")
 			} else {
-				fmt.Printf("%d conflict(s) detected:\n", len(conflicts))
+				fmt.Fprintf(out, "%d conflict(s) detected:\n", len(conflicts))
 				for _, c := range conflicts {
 					decision := c.Decision
 					if decision == "" {
 						decision = "Conflict"
 					}
-					fmt.Printf("  [%s] %s in %s (held by %s)\n", decision, c.EntityKey, c.File, c.HeldBy)
+					fmt.Fprintf(out, "  [%s] %s in %s (held by %s)\n", decision, c.EntityKey, c.File, c.HeldBy)
 					if c.Reason != "" {
-						fmt.Printf("    %s\n", c.Reason)
+						fmt.Fprintf(out, "    %s\n", c.Reason)
 					}
 				}
 			}
 
 			if len(result.Readers) > 0 {
-				fmt.Printf("%d other agent(s) currently reading:\n", len(result.Readers))
+				fmt.Fprintf(out, "%d other agent(s) currently reading:\n", len(result.Readers))
 				for _, rd := range result.Readers {
 					loc := rd.File
 					if rd.Entity != "" {
 						loc = rd.File + "::" + rd.Entity
 					}
-					fmt.Printf("  %s reading %s\n", rd.AgentName, loc)
+					fmt.Fprintf(out, "  %s reading %s\n", rd.AgentName, loc)
 				}
+			}
+			if len(result.ActiveClaims) > 0 {
+				fmt.Fprintf(out, "%d active claim(s)\n", len(result.ActiveClaims))
+			}
+			if len(result.StaleAgents) > 0 {
+				fmt.Fprintf(out, "%d stale agent(s):\n", len(result.StaleAgents))
+				for _, agent := range result.StaleAgents {
+					name := agent.Name
+					if name == "" {
+						name = agent.ID
+					}
+					fmt.Fprintf(out, "  %s heartbeat %s\n", name, agent.HeartbeatAt)
+				}
+			}
+			if len(result.UnreadFeedEvents) > 0 {
+				fmt.Fprintf(out, "%d unread feed event(s)\n", len(result.UnreadFeedEvents))
 			}
 
 			return nil
@@ -833,7 +887,185 @@ func newCoordCheckCmd(jsonFlag *bool) *cobra.Command {
 	}
 
 	cmd.Flags().BoolVar(&quiet, "quiet", false, "minimal output (exit code only)")
+	cmd.Flags().DurationVar(&staleAfter, "stale-after", coord.DefaultConfig.StaleThreshold, "agent heartbeat age before reporting stale")
 	return cmd
+}
+
+func coordCheckClaimAndAgentSummary(c *coord.Coordinator, claims []coord.ClaimInfo, agents []coord.AgentInfo) ([]JSONCoordCheckClaim, []JSONCoordCheckAgent) {
+	staleAgents := coordStaleAgentSummaries(c, agents)
+	staleByAgent := make(map[string]bool, len(staleAgents))
+	for _, agent := range staleAgents {
+		staleByAgent[agent.ID] = true
+	}
+
+	activeClaims := make([]JSONCoordCheckClaim, 0, len(claims))
+	for _, claim := range claims {
+		activeClaims = append(activeClaims, JSONCoordCheckClaim{
+			EntityKey: claim.EntityKey,
+			File:      claim.File,
+			AgentID:   claim.Agent,
+			AgentName: claim.AgentName,
+			Mode:      claim.Mode,
+			Stale:     staleByAgent[claim.Agent],
+		})
+	}
+	sort.Slice(activeClaims, func(i, j int) bool {
+		if activeClaims[i].File != activeClaims[j].File {
+			return activeClaims[i].File < activeClaims[j].File
+		}
+		if activeClaims[i].EntityKey != activeClaims[j].EntityKey {
+			return activeClaims[i].EntityKey < activeClaims[j].EntityKey
+		}
+		return activeClaims[i].AgentName < activeClaims[j].AgentName
+	})
+
+	return activeClaims, staleAgents
+}
+
+func coordStaleAgentSummaries(c *coord.Coordinator, agents []coord.AgentInfo) []JSONCoordCheckAgent {
+	now := time.Now().UTC()
+	cutoff := now.Add(-c.Config.StaleThreshold)
+
+	var staleAgents []JSONCoordCheckAgent
+	for _, agent := range agents {
+		if agent.HeartbeatAt.IsZero() || agent.HeartbeatAt.Before(cutoff) {
+			staleFor := int64(0)
+			if !agent.HeartbeatAt.IsZero() {
+				staleFor = int64(now.Sub(agent.HeartbeatAt).Seconds())
+			}
+			staleAgents = append(staleAgents, JSONCoordCheckAgent{
+				ID:          agent.ID,
+				Name:        agent.Name,
+				Workspace:   agent.Workspace,
+				Host:        agent.Host,
+				HeartbeatAt: agent.HeartbeatAt.Format(time.RFC3339),
+				StaleForSec: staleFor,
+			})
+		}
+	}
+	sort.Slice(staleAgents, func(i, j int) bool {
+		if staleAgents[i].Name != staleAgents[j].Name {
+			return staleAgents[i].Name < staleAgents[j].Name
+		}
+		return staleAgents[i].ID < staleAgents[j].ID
+	})
+	return staleAgents
+}
+
+func newCoordCleanupStaleCmd(jsonFlag *bool) *cobra.Command {
+	var (
+		dryRun     bool
+		staleAfter = coord.DefaultConfig.StaleThreshold
+	)
+
+	cmd := &cobra.Command{
+		Use:   "cleanup-stale",
+		Short: "Remove stale coordination agents",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, _, err := openCoordinatorForCommand(cmd)
+			if err != nil {
+				return err
+			}
+			if staleAfter <= 0 {
+				return fmt.Errorf("--stale-after must be positive")
+			}
+			c.Config.StaleThreshold = staleAfter
+
+			agents, err := c.ListAgents()
+			if err != nil {
+				return fmt.Errorf("list agents: %w", err)
+			}
+			staleAgents := coordStaleAgentSummaries(c, agents)
+			removed := 0
+			if !dryRun {
+				removedAgents, err := c.GCStaleAgents()
+				if err != nil {
+					return fmt.Errorf("cleanup stale agents: %w", err)
+				}
+				removed = len(removedAgents)
+				staleAgents = coordStaleAgentSummaries(c, removedAgents)
+			}
+
+			result := JSONCoordCleanupStaleOutput{
+				OK:          true,
+				DryRun:      dryRun,
+				Removed:     removed,
+				StaleAgents: staleAgents,
+			}
+			if *jsonFlag {
+				return writeJSON(cmd.OutOrStdout(), result)
+			}
+
+			out := cmd.OutOrStdout()
+			switch {
+			case dryRun && len(staleAgents) == 0:
+				fmt.Fprintln(out, "No stale agents found.")
+			case dryRun:
+				fmt.Fprintf(out, "%d stale agent(s) would be removed:\n", len(staleAgents))
+				for _, agent := range staleAgents {
+					fmt.Fprintf(out, "  %s (%s) heartbeat %s\n", coordDisplayAgentName(agent), agent.ID, agent.HeartbeatAt)
+				}
+			case removed == 0:
+				fmt.Fprintln(out, "No stale agents removed.")
+			default:
+				fmt.Fprintf(out, "%d stale agent(s) removed:\n", removed)
+				for _, agent := range staleAgents {
+					fmt.Fprintf(out, "  %s (%s) heartbeat %s\n", coordDisplayAgentName(agent), agent.ID, agent.HeartbeatAt)
+				}
+			}
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "show stale agents without removing them")
+	cmd.Flags().DurationVar(&staleAfter, "stale-after", coord.DefaultConfig.StaleThreshold, "agent heartbeat age before removing stale agents")
+	return cmd
+}
+
+func coordDisplayAgentName(agent JSONCoordCheckAgent) string {
+	if agent.Name != "" {
+		return agent.Name
+	}
+	return agent.ID
+}
+
+func coordCheckUnreadFeedEvents(c *coord.Coordinator, activeID string, limit int) []JSONCoordCheckFeedEvent {
+	if limit <= 0 {
+		return nil
+	}
+	var events []coord.FeedEvent
+	var err error
+	if activeID != "" {
+		events, err = c.WalkFeedSinceCursor(activeID, limit)
+	} else {
+		events, err = c.WalkFeed("", limit)
+	}
+	if err != nil {
+		return nil
+	}
+	out := make([]JSONCoordCheckFeedEvent, 0, len(events))
+	for _, event := range events {
+		filesSeen := make(map[string]struct{}, len(event.Entities))
+		var files []string
+		for _, entity := range event.Entities {
+			if entity.File == "" {
+				continue
+			}
+			if _, seen := filesSeen[entity.File]; seen {
+				continue
+			}
+			filesSeen[entity.File] = struct{}{}
+			files = append(files, entity.File)
+		}
+		sort.Strings(files)
+		out = append(out, JSONCoordCheckFeedEvent{
+			Event:     event.Event,
+			AgentID:   event.AgentID,
+			AgentName: event.AgentName,
+			FeedHash:  event.FeedHash,
+			Files:     files,
+		})
+	}
+	return out
 }
 
 // --- Diff ---
@@ -844,7 +1076,7 @@ func newCoordDiffCmd(jsonFlag *bool) *cobra.Command {
 		Short: "Show another agent's claimed entities",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			c, _, err := openCoordinator()
+			c, _, err := openCoordinatorForCommand(cmd)
 			if err != nil {
 				return err
 			}
@@ -863,27 +1095,25 @@ func newCoordDiffCmd(jsonFlag *bool) *cobra.Command {
 				}
 			}
 
-			result := struct {
-				Agent  *coord.AgentInfo  `json:"agent"`
-				Claims []coord.ClaimInfo `json:"claims"`
-			}{
+			result := JSONCoordDiffOutput{
 				Agent:  agent,
 				Claims: agentClaims,
 			}
 
 			if *jsonFlag {
-				return outputJSON(result)
+				return writeJSON(cmd.OutOrStdout(), result)
 			}
 
-			fmt.Printf("Agent: %s (%s)\n", agent.Name, agent.ID)
+			out := cmd.OutOrStdout()
+			fmt.Fprintf(out, "Agent: %s (%s)\n", agent.Name, agent.ID)
 			if len(agentClaims) == 0 {
-				fmt.Println("No active claims.")
+				fmt.Fprintln(out, "No active claims.")
 				return nil
 			}
 
-			fmt.Printf("Claims (%d):\n", len(agentClaims))
+			fmt.Fprintf(out, "Claims (%d):\n", len(agentClaims))
 			for _, cl := range agentClaims {
-				fmt.Printf("  [%s] %s in %s\n", cl.Mode, cl.EntityKey, cl.File)
+				fmt.Fprintf(out, "  [%s] %s in %s\n", cl.Mode, cl.EntityKey, cl.File)
 			}
 
 			return nil
@@ -899,7 +1129,7 @@ func newCoordXrefsCmd(jsonFlag *bool) *cobra.Command {
 		Short: "Reverse call lookup for a symbol",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			c, _, err := openCoordinator()
+			c, _, err := openCoordinatorForCommand(cmd)
 			if err != nil {
 				return err
 			}
@@ -927,19 +1157,20 @@ func newCoordXrefsCmd(jsonFlag *bool) *cobra.Command {
 			sites, ok := idx.Refs[key]
 			if !ok {
 				if *jsonFlag {
-					return outputJSON([]coord.XrefCallSite{})
+					return writeJSON(cmd.OutOrStdout(), JSONCoordXrefsOutput{References: []coord.XrefCallSite{}})
 				}
-				fmt.Printf("No references found for %s\n", key)
+				fmt.Fprintf(cmd.OutOrStdout(), "No references found for %s\n", key)
 				return nil
 			}
 
 			if *jsonFlag {
-				return outputJSON(sites)
+				return writeJSON(cmd.OutOrStdout(), JSONCoordXrefsOutput{References: sites})
 			}
 
-			fmt.Printf("References to %s:\n", key)
+			out := cmd.OutOrStdout()
+			fmt.Fprintf(out, "References to %s:\n", key)
 			for _, site := range sites {
-				fmt.Printf("  %s:%d in %s\n", site.File, site.Line, site.Entity)
+				fmt.Fprintf(out, "  %s:%d in %s\n", site.File, site.Line, site.Entity)
 			}
 
 			return nil
@@ -961,9 +1192,12 @@ func newCoordGraphCmd(jsonFlag *bool) *cobra.Command {
 
 			if cfg.Workspaces == nil || len(cfg.Workspaces) == 0 {
 				if *jsonFlag {
-					return outputJSON(map[string]any{"workspaces": map[string]string{}, "edges": []string{}})
+					return writeJSON(cmd.OutOrStdout(), JSONCoordGraphOutput{
+						Workspaces: map[string]string{},
+						Edges:      []JSONCoordGraphEdge{},
+					})
 				}
-				fmt.Println("No workspaces configured. Use 'graft workspace add' or 'graft workon --auto-discover'.")
+				fmt.Fprintln(cmd.OutOrStdout(), "No workspaces configured. Use 'graft workspace add' or 'graft workon --auto-discover'.")
 				return nil
 			}
 
@@ -972,39 +1206,32 @@ func newCoordGraphCmd(jsonFlag *bool) *cobra.Command {
 				return fmt.Errorf("build workspace graph: %w", err)
 			}
 
-			type graphEdge struct {
-				From string `json:"from"`
-				To   string `json:"to"`
-			}
-
-			var edges []graphEdge
+			var edges []JSONCoordGraphEdge
 			for wsName := range cfg.Workspaces {
 				deps := graph.DependentsOf(wsName)
 				for _, dep := range deps {
-					edges = append(edges, graphEdge{From: dep, To: wsName})
+					edges = append(edges, JSONCoordGraphEdge{From: dep, To: wsName})
 				}
 			}
 
 			if *jsonFlag {
-				result := struct {
-					Workspaces map[string]string `json:"workspaces"`
-					Edges      []graphEdge       `json:"edges"`
-				}{
+				result := JSONCoordGraphOutput{
 					Workspaces: cfg.Workspaces,
 					Edges:      edges,
 				}
-				return outputJSON(result)
+				return writeJSON(cmd.OutOrStdout(), result)
 			}
 
-			fmt.Println("Workspace Dependency Graph")
-			fmt.Println(strings.Repeat("-", 40))
+			out := cmd.OutOrStdout()
+			fmt.Fprintln(out, "Workspace Dependency Graph")
+			fmt.Fprintln(out, strings.Repeat("-", 40))
 			for wsName, wsPath := range cfg.Workspaces {
 				deps := graph.DependentsOf(wsName)
 				if len(deps) > 0 {
-					fmt.Printf("  %s (%s)\n", wsName, wsPath)
-					fmt.Printf("    depended on by: %s\n", strings.Join(deps, ", "))
+					fmt.Fprintf(out, "  %s (%s)\n", wsName, wsPath)
+					fmt.Fprintf(out, "    depended on by: %s\n", strings.Join(deps, ", "))
 				} else {
-					fmt.Printf("  %s (%s) [leaf]\n", wsName, wsPath)
+					fmt.Fprintf(out, "  %s (%s) [leaf]\n", wsName, wsPath)
 				}
 			}
 
@@ -1023,7 +1250,7 @@ func newCoordWatchCmd(jsonFlag *bool) *cobra.Command {
 		Short: "Add a watch claim on an entity",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			c, r, err := openCoordinator()
+			c, r, err := openCoordinatorForCommand(cmd)
 			if err != nil {
 				return err
 			}
@@ -1051,20 +1278,17 @@ func newCoordWatchCmd(jsonFlag *bool) *cobra.Command {
 			}
 
 			if *jsonFlag {
-				result := map[string]string{
-					"status":     "watching",
-					"entity_key": entityKey,
-				}
-				if filePath != "" {
-					result["file"] = filePath
-				}
-				return outputJSON(result)
+				return writeJSON(cmd.OutOrStdout(), JSONCoordWatchOutput{
+					Status:    "watching",
+					EntityKey: entityKey,
+					File:      filePath,
+				})
 			}
 
 			if filePath != "" {
-				fmt.Printf("Watching: %s (in %s)\n", entityKey, filePath)
+				fmt.Fprintf(cmd.OutOrStdout(), "Watching: %s (in %s)\n", entityKey, filePath)
 			} else {
-				fmt.Printf("Watching: %s\n", entityKey)
+				fmt.Fprintf(cmd.OutOrStdout(), "Watching: %s\n", entityKey)
 			}
 			return nil
 		},
@@ -1082,7 +1306,7 @@ func newCoordUnwatchCmd(jsonFlag *bool) *cobra.Command {
 		Short: "Remove a watch claim",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			c, r, err := openCoordinator()
+			c, r, err := openCoordinatorForCommand(cmd)
 			if err != nil {
 				return err
 			}
@@ -1099,13 +1323,13 @@ func newCoordUnwatchCmd(jsonFlag *bool) *cobra.Command {
 			}
 
 			if *jsonFlag {
-				return outputJSON(map[string]string{
-					"status":     "unwatched",
-					"entity_key": entityKey,
+				return writeJSON(cmd.OutOrStdout(), JSONCoordUnwatchOutput{
+					Status:    "unwatched",
+					EntityKey: entityKey,
 				})
 			}
 
-			fmt.Printf("Stopped watching: %s\n", entityKey)
+			fmt.Fprintf(cmd.OutOrStdout(), "Stopped watching: %s\n", entityKey)
 			return nil
 		},
 	}
@@ -1121,7 +1345,7 @@ func newCoordResolveCmd(jsonFlag *bool) *cobra.Command {
 		Short: "Release or transfer a claim",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			c, r, err := openCoordinator()
+			c, r, err := openCoordinatorForCommand(cmd)
 			if err != nil {
 				return err
 			}
@@ -1137,13 +1361,13 @@ func newCoordResolveCmd(jsonFlag *bool) *cobra.Command {
 					return fmt.Errorf("transfer: %w", err)
 				}
 				if *jsonFlag {
-					return outputJSON(map[string]string{
-						"status":   "transferred",
-						"key_hash": keyHash,
-						"to_agent": transfer,
+					return writeJSON(cmd.OutOrStdout(), JSONCoordResolveOutput{
+						Status:  "transferred",
+						KeyHash: keyHash,
+						ToAgent: transfer,
 					})
 				}
-				fmt.Printf("Claim %s transferred to %s\n", keyHash, transfer)
+				fmt.Fprintf(cmd.OutOrStdout(), "Claim %s transferred to %s\n", keyHash, transfer)
 				return nil
 			}
 
@@ -1152,13 +1376,13 @@ func newCoordResolveCmd(jsonFlag *bool) *cobra.Command {
 			}
 
 			if *jsonFlag {
-				return outputJSON(map[string]string{
-					"status":   "released",
-					"key_hash": keyHash,
+				return writeJSON(cmd.OutOrStdout(), JSONCoordResolveOutput{
+					Status:  "released",
+					KeyHash: keyHash,
 				})
 			}
 
-			fmt.Printf("Claim %s released\n", keyHash)
+			fmt.Fprintf(cmd.OutOrStdout(), "Claim %s released\n", keyHash)
 			return nil
 		},
 	}
@@ -1187,7 +1411,7 @@ func newCoordPlanListCmd(jsonFlag *bool) *cobra.Command {
 		Use:   "list",
 		Short: "List all coordination plans",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			c, _, err := openCoordinator()
+			c, _, err := openCoordinatorForCommand(cmd)
 			if err != nil {
 				return err
 			}
@@ -1198,15 +1422,15 @@ func newCoordPlanListCmd(jsonFlag *bool) *cobra.Command {
 			}
 
 			if *jsonFlag {
-				return outputJSON(plans)
+				return writeJSON(cmd.OutOrStdout(), JSONCoordPlansOutput{Plans: plans})
 			}
 
 			if len(plans) == 0 {
-				fmt.Println("No plans.")
+				fmt.Fprintln(cmd.OutOrStdout(), "No plans.")
 				return nil
 			}
 
-			w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+			w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 4, 2, ' ', 0)
 			fmt.Fprintln(w, "ID\tTITLE\tSTATUS\tSTEPS\tCREATED")
 			for _, p := range plans {
 				completed := 0
@@ -1234,7 +1458,7 @@ func newCoordPlanGetCmd(jsonFlag *bool) *cobra.Command {
 		Short: "Show plan details with step status",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			c, _, err := openCoordinator()
+			c, _, err := openCoordinatorForCommand(cmd)
 			if err != nil {
 				return err
 			}
@@ -1245,27 +1469,28 @@ func newCoordPlanGetCmd(jsonFlag *bool) *cobra.Command {
 			}
 
 			if *jsonFlag {
-				return outputJSON(plan)
+				return writeJSON(cmd.OutOrStdout(), JSONCoordPlanOutput{Plan: plan})
 			}
 
-			fmt.Printf("Plan: %s\n", plan.Title)
-			fmt.Printf("  ID:      %s\n", plan.ID)
-			fmt.Printf("  Status:  %s\n", plan.Status)
+			out := cmd.OutOrStdout()
+			fmt.Fprintf(out, "Plan: %s\n", plan.Title)
+			fmt.Fprintf(out, "  ID:      %s\n", plan.ID)
+			fmt.Fprintf(out, "  Status:  %s\n", plan.Status)
 			if plan.Author != "" {
-				fmt.Printf("  Author:  %s\n", plan.Author)
+				fmt.Fprintf(out, "  Author:  %s\n", plan.Author)
 			}
 			if plan.Description != "" {
-				fmt.Printf("  Desc:    %s\n", plan.Description)
+				fmt.Fprintf(out, "  Desc:    %s\n", plan.Description)
 			}
-			fmt.Printf("  Created: %s\n", plan.CreatedAt.Format("2006-01-02 15:04:05"))
-			fmt.Printf("  Updated: %s\n", plan.UpdatedAt.Format("2006-01-02 15:04:05"))
+			fmt.Fprintf(out, "  Created: %s\n", plan.CreatedAt.Format("2006-01-02 15:04:05"))
+			fmt.Fprintf(out, "  Updated: %s\n", plan.UpdatedAt.Format("2006-01-02 15:04:05"))
 
 			if len(plan.Steps) == 0 {
-				fmt.Println("  Steps:   (none)")
+				fmt.Fprintln(out, "  Steps:   (none)")
 				return nil
 			}
 
-			fmt.Printf("  Steps (%d):\n", len(plan.Steps))
+			fmt.Fprintf(out, "  Steps (%d):\n", len(plan.Steps))
 			for _, step := range plan.Steps {
 				marker := " "
 				switch step.Status {
@@ -1280,7 +1505,7 @@ func newCoordPlanGetCmd(jsonFlag *bool) *cobra.Command {
 				if step.AssignedTo != "" {
 					assignee = fmt.Sprintf(" [%s]", step.AssignedTo)
 				}
-				fmt.Printf("    [%s] %d. %s%s\n", marker, step.Order, step.Description, assignee)
+				fmt.Fprintf(out, "    [%s] %d. %s%s\n", marker, step.Order, step.Description, assignee)
 			}
 
 			return nil
@@ -1299,7 +1524,7 @@ func newCoordPlanCreateCmd(jsonFlag *bool) *cobra.Command {
 		Short: "Create a new coordination plan",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			c, r, err := openCoordinator()
+			c, r, err := openCoordinatorForCommand(cmd)
 			if err != nil {
 				return err
 			}
@@ -1318,10 +1543,10 @@ func newCoordPlanCreateCmd(jsonFlag *bool) *cobra.Command {
 			}
 
 			if *jsonFlag {
-				return outputJSON(plan)
+				return writeJSON(cmd.OutOrStdout(), JSONCoordPlanOutput{Plan: plan})
 			}
 
-			fmt.Printf("Created plan %s: %s\n", plan.ID, plan.Title)
+			fmt.Fprintf(cmd.OutOrStdout(), "Created plan %s: %s\n", plan.ID, plan.Title)
 			return nil
 		},
 	}
@@ -1352,7 +1577,7 @@ func newCoordPublishCmd(jsonFlag *bool) *cobra.Command {
 		Short: "Publish a feed event for a commit (for git/buckley commits)",
 		Long:  `Manually publish a coordination feed event for the latest commit, useful when commits are made via git or buckley rather than graft.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			c, r, err := openCoordinator()
+			c, r, err := openCoordinatorForCommand(cmd)
 			if err != nil {
 				return err
 			}
@@ -1378,14 +1603,14 @@ func newCoordPublishCmd(jsonFlag *bool) *cobra.Command {
 			}
 
 			if *jsonFlag {
-				return outputJSON(map[string]string{
-					"status":      "published",
-					"commit_hash": string(commitHash),
-					"agent_id":    activeID,
+				return writeJSON(cmd.OutOrStdout(), JSONCoordPublishOutput{
+					Status:     "published",
+					CommitHash: string(commitHash),
+					AgentID:    activeID,
 				})
 			}
 
-			fmt.Printf("Published feed event for commit %s\n", string(commitHash)[:12])
+			fmt.Fprintf(cmd.OutOrStdout(), "Published feed event for commit %s\n", string(commitHash)[:12])
 			return nil
 		},
 	}
@@ -1401,7 +1626,7 @@ func newCoordHeartbeatCmd(jsonFlag *bool) *cobra.Command {
 		Use:   "heartbeat",
 		Short: "Update the active agent's heartbeat timestamp",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			c, r, err := openCoordinator()
+			c, r, err := openCoordinatorForCommand(cmd)
 			if err != nil {
 				return err
 			}
@@ -1414,15 +1639,18 @@ func newCoordHeartbeatCmd(jsonFlag *bool) *cobra.Command {
 			if err := c.Heartbeat(activeID); err != nil {
 				return fmt.Errorf("heartbeat: %w", err)
 			}
+			if _, err := coord.TouchSessionByAgentID(r.GraftDir, activeID); err != nil {
+				return fmt.Errorf("touch session: %w", err)
+			}
 
 			if *jsonFlag {
-				return outputJSON(map[string]string{
-					"status":   "ok",
-					"agent_id": activeID,
+				return writeJSON(cmd.OutOrStdout(), JSONCoordHeartbeatOutput{
+					Status:  "ok",
+					AgentID: activeID,
 				})
 			}
 
-			fmt.Printf("Heartbeat updated for agent %s\n", activeID)
+			fmt.Fprintf(cmd.OutOrStdout(), "Heartbeat updated for agent %s\n", activeID)
 			return nil
 		},
 	}
@@ -1435,7 +1663,7 @@ func newCoordSessionsCmd(jsonFlag *bool) *cobra.Command {
 		Use:   "sessions",
 		Short: "List active persistent sessions",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			_, r, err := openCoordinator()
+			_, r, err := openCoordinatorForCommand(cmd)
 			if err != nil {
 				return err
 			}
@@ -1446,15 +1674,15 @@ func newCoordSessionsCmd(jsonFlag *bool) *cobra.Command {
 			}
 
 			if *jsonFlag {
-				return outputJSON(sessions)
+				return writeJSON(cmd.OutOrStdout(), JSONCoordSessionsOutput{Sessions: sessions})
 			}
 
 			if len(sessions) == 0 {
-				fmt.Println("No active sessions.")
+				fmt.Fprintln(cmd.OutOrStdout(), "No active sessions.")
 				return nil
 			}
 
-			w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+			w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 4, 2, ' ', 0)
 			fmt.Fprintln(w, "AGENT\tID\tMODE\tHOST\tPID\tLAST ACTIVE\tSTALE")
 			for _, s := range sessions {
 				stale := ""
@@ -1477,7 +1705,7 @@ func newCoordPresenceCmd(jsonFlag *bool) *cobra.Command {
 		Use:   "presence",
 		Short: "Show who is reading what files",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			c, _, err := openCoordinator()
+			c, _, err := openCoordinatorForCommand(cmd)
 			if err != nil {
 				return err
 			}
@@ -1488,15 +1716,15 @@ func newCoordPresenceCmd(jsonFlag *bool) *cobra.Command {
 			}
 
 			if *jsonFlag {
-				return outputJSON(entries)
+				return writeJSON(cmd.OutOrStdout(), JSONCoordPresenceOutput{Entries: entries})
 			}
 
 			if len(entries) == 0 {
-				fmt.Println("No active readers.")
+				fmt.Fprintln(cmd.OutOrStdout(), "No active readers.")
 				return nil
 			}
 
-			w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+			w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 4, 2, ' ', 0)
 			fmt.Fprintln(w, "AGENT\tFILE\tENTITY\tSINCE")
 			for _, e := range entries {
 				entity := e.Entity
@@ -1522,7 +1750,7 @@ func newCoordReadingCmd(jsonFlag *bool) *cobra.Command {
 		Short: "Register that you are reading a file",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			c, r, err := openCoordinator()
+			c, r, err := openCoordinatorForCommand(cmd)
 			if err != nil {
 				return err
 			}
@@ -1539,21 +1767,18 @@ func newCoordReadingCmd(jsonFlag *bool) *cobra.Command {
 			}
 
 			if *jsonFlag {
-				result := map[string]string{
-					"status":   "reading",
-					"file":     file,
-					"agent_id": activeID,
-				}
-				if entity != "" {
-					result["entity"] = entity
-				}
-				return outputJSON(result)
+				return writeJSON(cmd.OutOrStdout(), JSONCoordReadingOutput{
+					Status:  "reading",
+					File:    file,
+					AgentID: activeID,
+					Entity:  entity,
+				})
 			}
 
 			if entity != "" {
-				fmt.Printf("Reading: %s (entity: %s)\n", file, entity)
+				fmt.Fprintf(cmd.OutOrStdout(), "Reading: %s (entity: %s)\n", file, entity)
 			} else {
-				fmt.Printf("Reading: %s\n", file)
+				fmt.Fprintf(cmd.OutOrStdout(), "Reading: %s\n", file)
 			}
 			return nil
 		},
@@ -1562,5 +1787,3 @@ func newCoordReadingCmd(jsonFlag *bool) *cobra.Command {
 	cmd.Flags().StringVar(&entity, "entity", "", "specific entity being read")
 	return cmd
 }
-
-// Note: outputJSON is defined in cmd_workon.go and shared across the package.

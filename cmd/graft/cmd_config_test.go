@@ -1,11 +1,14 @@
 package main
 
 import (
+	"bytes"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/odvcencio/graft/pkg/repo"
 	"github.com/odvcencio/graft/pkg/userconfig"
 )
 
@@ -71,6 +74,104 @@ func TestIntegration_ConfigGlobalSetGet(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "GlobalAlice") {
 		t.Fatalf(".graftconfig missing GlobalAlice: %s", string(data))
+	}
+}
+
+func TestConfigGlobalOrchardAndSigningKeys(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	runConfigCommand(t, "--global", "orchard.url", "orchard.example.com")
+	runConfigCommand(t, "--global", "orchard.username", "alice")
+	runConfigCommand(t, "--global", "orchard.owner", "acme")
+	runConfigCommand(t, "--global", "signing.key", filepath.Join(home, ".ssh", "id_ed25519"))
+	runConfigCommand(t, "--global", "signing.auto", "true")
+
+	if got := strings.TrimSpace(runConfigCommand(t, "--global", "orchard.url")); got != "https://orchard.example.com" {
+		t.Fatalf("orchard.url = %q, want normalized https://orchard.example.com", got)
+	}
+	if got := strings.TrimSpace(runConfigCommand(t, "--global", "orchard.username")); got != "alice" {
+		t.Fatalf("orchard.username = %q, want alice", got)
+	}
+	if got := strings.TrimSpace(runConfigCommand(t, "--global", "orchard.owner")); got != "acme" {
+		t.Fatalf("orchard.owner = %q, want acme", got)
+	}
+	if got := strings.TrimSpace(runConfigCommand(t, "--global", "signing.auto")); got != "true" {
+		t.Fatalf("signing.auto = %q, want true", got)
+	}
+
+	out := runConfigCommand(t, "--global", "--list")
+	for _, want := range []string{
+		"orchard.url=https://orchard.example.com",
+		"orchard.username=alice",
+		"orchard.owner=acme",
+		"signing.key=" + filepath.Join(home, ".ssh", "id_ed25519"),
+		"signing.auto=true",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("config --global --list missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestConfigGlobalSigningAutoRejectsInvalidBool(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	cmd := newConfigCmd()
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"--global", "signing.auto", "sometimes"})
+
+	if err := cmd.Execute(); err == nil {
+		t.Fatal("expected invalid signing.auto value to fail")
+	}
+}
+
+func TestConfigHelpDocumentsHookTrustFlow(t *testing.T) {
+	var out bytes.Buffer
+	cmd := newConfigCmd()
+	cmd.SetOut(&out)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"--help"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("config --help: %v", err)
+	}
+	raw := out.String()
+	for _, want := range []string{
+		"Hook trust:",
+		"Cloned or imported repositories mark repo-provided hooks untrusted",
+		"graft config hooks.trusted true",
+		"graft config hooks.trusted false",
+	} {
+		if !strings.Contains(raw, want) {
+			t.Fatalf("config help missing %q:\n%s", want, raw)
+		}
+	}
+}
+
+func TestConfigRepoAutoInitNoticeUsesCommandErrorWriter(t *testing.T) {
+	dir := t.TempDir()
+	runGit(t, dir, "init", "-b", "main")
+
+	restore := chdirForTest(t, dir)
+	defer restore()
+
+	var errOut bytes.Buffer
+	cmd := newConfigCmd()
+	cmd.SilenceUsage = true
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(&errOut)
+	cmd.SetArgs([]string{"hooks.trusted", "true"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("config hooks.trusted: %v\nstderr: %s", err, errOut.String())
+	}
+	if !strings.Contains(errOut.String(), ".graft not found") {
+		t.Fatalf("stderr = %q, want auto-init notice", errOut.String())
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".graft", "config.json")); err != nil {
+		t.Fatalf("config.json not written: %v", err)
 	}
 }
 
@@ -174,5 +275,40 @@ func TestFormatUserConfigIncludesOrchardProfiles(t *testing.T) {
 	}
 	if strings.Contains(out, "code-token") || strings.Contains(out, "orchard-token") {
 		t.Fatalf("formatUserConfig leaked token values:\n%s", out)
+	}
+}
+
+func runConfigCommand(t *testing.T, args ...string) string {
+	t.Helper()
+	var out bytes.Buffer
+	cmd := newConfigCmd()
+	cmd.SetOut(&out)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs(args)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("config %v: %v", args, err)
+	}
+	return out.String()
+}
+
+func TestRepoConfigHooksTrustedKey(t *testing.T) {
+	cfg := &repo.Config{}
+	if err := applyRepoConfigKey(cfg, "hooks.trusted", "true"); err != nil {
+		t.Fatalf("apply hooks.trusted: %v", err)
+	}
+	got, err := readRepoConfigKey(cfg, "hooks.trusted")
+	if err != nil {
+		t.Fatalf("read hooks.trusted: %v", err)
+	}
+	if got != "true" {
+		t.Fatalf("hooks.trusted = %q, want true", got)
+	}
+	lines := strings.Join(formatRepoConfig(cfg), "\n")
+	if !strings.Contains(lines, "hooks.trusted=true") {
+		t.Fatalf("formatRepoConfig missing hooks.trusted=true:\n%s", lines)
+	}
+
+	if err := applyRepoConfigKey(cfg, "hooks.trusted", "not-bool"); err == nil {
+		t.Fatal("expected invalid hooks.trusted value to fail")
 	}
 }

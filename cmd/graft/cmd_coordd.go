@@ -1,8 +1,6 @@
 package main
 
 import (
-	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -12,11 +10,11 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/odvcencio/arbiter/overrides"
 	"github.com/odvcencio/graft/pkg/coord"
 	"github.com/odvcencio/graft/pkg/coordd"
 	"github.com/odvcencio/graft/pkg/repo"
 	"github.com/spf13/cobra"
+	"m31labs.dev/arbiter/overrides"
 )
 
 func newCoorddCmd() *cobra.Command {
@@ -44,7 +42,17 @@ func newCoorddCmd() *cobra.Command {
 }
 
 func openCoorddRuntime() (*repo.Repo, *coord.Coordinator, error) {
-	r, err := openRepo(".")
+	return openCoorddRuntimeWithRepoOpener(openRepo)
+}
+
+func openCoorddRuntimeForCommand(cmd *cobra.Command) (*repo.Repo, *coord.Coordinator, error) {
+	return openCoorddRuntimeWithRepoOpener(func(path string) (*repo.Repo, error) {
+		return openRepoForCommand(cmd, path)
+	})
+}
+
+func openCoorddRuntimeWithRepoOpener(open func(string) (*repo.Repo, error)) (*repo.Repo, *coord.Coordinator, error) {
+	r, err := open(".")
 	if err != nil {
 		return nil, nil, fmt.Errorf("open repo: %w", err)
 	}
@@ -62,7 +70,7 @@ func newCoorddServeCmd() *cobra.Command {
 		Use:   "serve",
 		Short: "Run the local coordination daemon",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			r, c, err := openCoorddRuntime()
+			r, c, err := openCoorddRuntimeForCommand(cmd)
 			if err != nil {
 				return err
 			}
@@ -81,7 +89,7 @@ func newCoorddServeCmd() *cobra.Command {
 				return err
 			}
 
-			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
 			return d.Run(ctx)
 		},
@@ -104,7 +112,7 @@ func newCoorddTailCmd() *cobra.Command {
 		Use:   "tail",
 		Short: "Read coordd local event journal",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			r, _, err := openCoorddRuntime()
+			r, _, err := openCoorddRuntimeForCommand(cmd)
 			if err != nil {
 				return err
 			}
@@ -112,7 +120,7 @@ func newCoorddTailCmd() *cobra.Command {
 			printed := map[string]bool{}
 			printBatch := func(events []coordd.Event) error {
 				if jsonFlag && !follow {
-					return outputJSON(events)
+					return writeJSON(cmd.OutOrStdout(), JSONCoorddTailOutput{Events: events})
 				}
 				for _, event := range events {
 					if printed[event.ID] {
@@ -120,7 +128,7 @@ func newCoorddTailCmd() *cobra.Command {
 					}
 					printed[event.ID] = true
 					if jsonFlag {
-						if err := json.NewEncoder(cmd.OutOrStdout()).Encode(event); err != nil {
+						if err := writeJSONLine(cmd.OutOrStdout(), JSONCoorddEventOutput{Event: &event}); err != nil {
 							return err
 						}
 						continue
@@ -141,7 +149,7 @@ func newCoorddTailCmd() *cobra.Command {
 				return nil
 			}
 
-			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
 
 			ticker := time.NewTicker(interval)
@@ -178,7 +186,7 @@ func newCoorddSnapshotCmd() *cobra.Command {
 		Use:   "snapshot",
 		Short: "Capture a local WIP snapshot",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			r, _, err := openCoorddRuntime()
+			r, _, err := openCoorddRuntimeForCommand(cmd)
 			if err != nil {
 				return err
 			}
@@ -194,14 +202,14 @@ func newCoorddSnapshotCmd() *cobra.Command {
 			}
 			if snapshot == nil {
 				if jsonFlag {
-					return outputJSON(map[string]any{"status": "clean"})
+					return writeJSON(cmd.OutOrStdout(), coorddSnapshotToJSON(nil))
 				}
 				fmt.Fprintln(cmd.OutOrStdout(), "No worktree changes to snapshot.")
 				return nil
 			}
 
 			if jsonFlag {
-				return outputJSON(snapshot)
+				return writeJSON(cmd.OutOrStdout(), coorddSnapshotToJSON(snapshot))
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "Snapshot %s captured with %d changed file(s)\n", snapshot.ID, snapshot.Summary.Changed)
 			return nil
@@ -227,7 +235,7 @@ func newCoorddPreflightCmd() *cobra.Command {
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var r *repo.Repo
-			if opened, _, err := openCoorddRuntime(); err == nil {
+			if opened, _, err := openCoorddRuntimeForCommand(cmd); err == nil {
 				r = opened
 			}
 
@@ -247,12 +255,11 @@ func newCoorddPreflightCmd() *cobra.Command {
 				_ = coordd.RecordPreflightDecision(r.GraftDir, input, decision)
 			}
 
-			result := map[string]any{
-				"input":    input,
-				"decision": decision,
-			}
 			if jsonFlag {
-				return outputJSON(result)
+				return writeJSON(cmd.OutOrStdout(), JSONCoorddActionDecisionOutput{
+					Input:    input,
+					Decision: decision,
+				})
 			}
 
 			fmt.Fprintf(cmd.OutOrStdout(), "%s: %s\n", decision.Action, decision.Reason)
@@ -267,6 +274,7 @@ func newCoorddPreflightCmd() *cobra.Command {
 
 func newCoorddExecCmd() *cobra.Command {
 	var jsonFlag bool
+	var checkOnly bool
 
 	cmd := &cobra.Command{
 		Use:   "exec -- <command...>",
@@ -279,7 +287,7 @@ func newCoorddExecCmd() *cobra.Command {
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var r *repo.Repo
-			if opened, _, err := openCoorddRuntime(); err == nil {
+			if opened, _, err := openCoorddRuntimeForCommand(cmd); err == nil {
 				r = opened
 			}
 
@@ -299,24 +307,37 @@ func newCoorddExecCmd() *cobra.Command {
 				_ = coordd.RecordPreflightDecision(r.GraftDir, input, decision)
 			}
 
+			if checkOnly {
+				if jsonFlag {
+					return writeJSON(cmd.OutOrStdout(), JSONCoorddActionDecisionOutput{
+						Input:    input,
+						Decision: decision,
+					})
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "%s: %s\n", decision.Action, decision.Reason)
+				fmt.Fprintf(cmd.OutOrStdout(), "selector: %s\n", input.Action.Selector)
+				return nil
+			}
+
 			if decision.Action == "Advisory" {
 				fmt.Fprintf(cmd.ErrOrStderr(), "coordd advisory: %s\n", decision.Reason)
 			}
 
-			execIO := coordd.ExecIO{
-				Stdin:  cmd.InOrStdin(),
-				Stdout: cmd.OutOrStdout(),
-				Stderr: cmd.ErrOrStderr(),
+			execSpec := repo.ExternalProcessSpec{
+				Context: cmd.Context(),
+				Stdin:   cmd.InOrStdin(),
+				Stdout:  cmd.OutOrStdout(),
+				Stderr:  cmd.ErrOrStderr(),
 			}
 			if jsonFlag {
-				execIO.Stdout = cmd.ErrOrStderr()
+				execSpec.Stdout = cmd.ErrOrStderr()
 			}
-			result, err := coordd.ExecuteGuardedWithIO(r, input, decision, execIO)
+			result, err := coordd.ExecuteGuardedProcessWithIO(r, execSpec, input, decision)
 			if jsonFlag {
 				if result == nil {
 					result = &coordd.ExecResult{Decision: decision}
 				}
-				if outputErr := outputJSON(result); outputErr != nil {
+				if outputErr := writeJSON(cmd.OutOrStdout(), coorddExecResultToJSON(result)); outputErr != nil {
 					return outputErr
 				}
 			}
@@ -325,6 +346,7 @@ func newCoorddExecCmd() *cobra.Command {
 	}
 
 	cmd.Flags().BoolVar(&jsonFlag, "json", false, "JSON output")
+	cmd.Flags().BoolVar(&checkOnly, "check-only", false, "evaluate policy without executing the command")
 	return cmd
 }
 
@@ -350,7 +372,7 @@ func newCoorddSpawnCmd() *cobra.Command {
 			return nil
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			r, _, err := openCoorddRuntime()
+			r, _, err := openCoorddRuntimeForCommand(cmd)
 			if err != nil {
 				return err
 			}
@@ -375,7 +397,7 @@ func newCoorddSpawnCmd() *cobra.Command {
 				result, spawnErr = coordd.SpawnDetached(r, readActiveAgentID(r), req)
 			}
 			if jsonFlag {
-				if outputErr := outputJSON(result); outputErr != nil {
+				if outputErr := writeJSON(cmd.OutOrStdout(), coorddSpawnResultToJSON(result)); outputErr != nil {
 					return outputErr
 				}
 			}
@@ -411,7 +433,7 @@ func newCoorddSpawnHeartbeatCmd() *cobra.Command {
 			if strings.TrimSpace(id) == "" {
 				return fmt.Errorf("--id is required")
 			}
-			r, _, err := openCoorddRuntime()
+			r, _, err := openCoorddRuntimeForCommand(cmd)
 			if err != nil {
 				return err
 			}
@@ -420,7 +442,7 @@ func newCoorddSpawnHeartbeatCmd() *cobra.Command {
 				return err
 			}
 			if jsonFlag {
-				return outputJSON(record)
+				return writeJSON(cmd.OutOrStdout(), coorddSpawnRecordToJSON(record))
 			}
 			printCoorddSpawn(cmd.OutOrStdout(), record)
 			return nil
@@ -444,7 +466,7 @@ func newCoorddSpawnShowCmd() *cobra.Command {
 			if strings.TrimSpace(id) == "" {
 				return fmt.Errorf("--id is required")
 			}
-			r, _, err := openCoorddRuntime()
+			r, _, err := openCoorddRuntimeForCommand(cmd)
 			if err != nil {
 				return err
 			}
@@ -456,7 +478,7 @@ func newCoorddSpawnShowCmd() *cobra.Command {
 				return fmt.Errorf("spawn %q not found", id)
 			}
 			if jsonFlag {
-				return outputJSON(view)
+				return writeJSON(cmd.OutOrStdout(), coorddSpawnViewToJSON(view))
 			}
 			printCoorddSpawn(cmd.OutOrStdout(), view.Record)
 			if view.Lease != nil && len(view.Lease.Env) > 0 {
@@ -487,6 +509,7 @@ func newCoorddSpawnTraceCmd() *cobra.Command {
 	var collapseHeartbeats bool
 	var phases []string
 	var noDefaultFallbacks bool
+	var redact bool
 	var jsonFlag bool
 
 	cmd := &cobra.Command{
@@ -496,7 +519,7 @@ func newCoorddSpawnTraceCmd() *cobra.Command {
 			if strings.TrimSpace(id) == "" {
 				return fmt.Errorf("--id is required")
 			}
-			r, _, err := openCoorddRuntime()
+			r, _, err := openCoorddRuntimeForCommand(cmd)
 			if err != nil {
 				return err
 			}
@@ -514,16 +537,20 @@ func newCoorddSpawnTraceCmd() *cobra.Command {
 			default:
 				return fmt.Errorf("invalid --view %q", view)
 			}
+			if redact && view == "raw" {
+				return fmt.Errorf("--redact cannot be used with --view raw; use the summary view for support-safe output")
+			}
 			if jsonFlag {
 				if view == "raw" {
-					return outputJSON(trace)
+					return writeJSON(cmd.OutOrStdout(), coorddSpawnTraceRawToJSON(trace))
 				}
-				return outputJSON(coordd.BuildSpawnTraceView(trace, coordd.SpawnTraceViewOptions{
+				return writeJSON(cmd.OutOrStdout(), coorddSpawnTraceViewToJSON(coordd.BuildSpawnTraceView(trace, coordd.SpawnTraceViewOptions{
 					MatchedOnly:        matchedOnly,
 					CollapseHeartbeats: collapseHeartbeats,
 					Phases:             phases,
 					NoDefaultFallbacks: noDefaultFallbacks,
-				}))
+					Redact:             redact,
+				})))
 			}
 			if view == "raw" {
 				printCoorddSpawn(cmd.OutOrStdout(), trace.Record)
@@ -549,6 +576,7 @@ func newCoorddSpawnTraceCmd() *cobra.Command {
 				CollapseHeartbeats: collapseHeartbeats,
 				Phases:             phases,
 				NoDefaultFallbacks: noDefaultFallbacks,
+				Redact:             redact,
 			}))
 			return nil
 		},
@@ -562,6 +590,7 @@ func newCoorddSpawnTraceCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&collapseHeartbeats, "collapse-heartbeats", true, "collapse consecutive heartbeat events in summary view")
 	cmd.Flags().StringSliceVar(&phases, "phase", nil, "limit summary view to one or more phases: authorization, activation, execution, completion, other")
 	cmd.Flags().BoolVar(&noDefaultFallbacks, "no-default-fallbacks", false, "hide default or fallback rules in summary view")
+	cmd.Flags().BoolVar(&redact, "redact", false, "omit command args, environment values, local paths, and source contents from summary output")
 	cmd.Flags().BoolVar(&jsonFlag, "json", false, "JSON output")
 	return cmd
 }
@@ -578,7 +607,7 @@ func newCoorddSpawnConsumeCmd() *cobra.Command {
 			if strings.TrimSpace(id) == "" {
 				return fmt.Errorf("--id is required")
 			}
-			r, _, err := openCoorddRuntime()
+			r, _, err := openCoorddRuntimeForCommand(cmd)
 			if err != nil {
 				return err
 			}
@@ -587,7 +616,7 @@ func newCoorddSpawnConsumeCmd() *cobra.Command {
 				return err
 			}
 			if jsonFlag {
-				return outputJSON(view)
+				return writeJSON(cmd.OutOrStdout(), coorddSpawnViewToJSON(view))
 			}
 			if view == nil || view.Record == nil {
 				return fmt.Errorf("spawn %q not found", id)
@@ -625,7 +654,7 @@ func newCoorddSpawnAttachCmd() *cobra.Command {
 			if strings.TrimSpace(id) == "" {
 				return fmt.Errorf("--id is required")
 			}
-			r, _, err := openCoorddRuntime()
+			r, _, err := openCoorddRuntimeForCommand(cmd)
 			if err != nil {
 				return err
 			}
@@ -637,9 +666,9 @@ func newCoorddSpawnAttachCmd() *cobra.Command {
 			if jsonFlag {
 				execIO.Stdout = cmd.ErrOrStderr()
 			}
-			record, err := coordd.AttachSpawn(r, id, heartbeat, execIO)
+			record, err := coordd.AttachSpawnWithContext(cmd.Context(), r, id, heartbeat, execIO)
 			if jsonFlag && record != nil {
-				if outputErr := outputJSON(record); outputErr != nil {
+				if outputErr := writeJSON(cmd.OutOrStdout(), coorddSpawnRecordToJSON(record)); outputErr != nil {
 					return outputErr
 				}
 			}
@@ -669,7 +698,7 @@ func newCoorddSpawnFinishCmd() *cobra.Command {
 			if strings.TrimSpace(id) == "" {
 				return fmt.Errorf("--id is required")
 			}
-			r, _, err := openCoorddRuntime()
+			r, _, err := openCoorddRuntimeForCommand(cmd)
 			if err != nil {
 				return err
 			}
@@ -678,7 +707,7 @@ func newCoorddSpawnFinishCmd() *cobra.Command {
 				return err
 			}
 			if jsonFlag {
-				return outputJSON(record)
+				return writeJSON(cmd.OutOrStdout(), coorddSpawnRecordToJSON(record))
 			}
 			printCoorddSpawn(cmd.OutOrStdout(), record)
 			return nil
@@ -705,13 +734,13 @@ func newCoorddSpawnWaitCmd() *cobra.Command {
 			if strings.TrimSpace(id) == "" {
 				return fmt.Errorf("--id is required")
 			}
-			r, _, err := openCoorddRuntime()
+			r, _, err := openCoorddRuntimeForCommand(cmd)
 			if err != nil {
 				return err
 			}
 			record, err := coordd.WaitSpawn(r.GraftDir, id, timeout, poll)
 			if jsonFlag && record != nil {
-				if outputErr := outputJSON(record); outputErr != nil {
+				if outputErr := writeJSON(cmd.OutOrStdout(), coorddSpawnRecordToJSON(record)); outputErr != nil {
 					return outputErr
 				}
 			}
@@ -736,7 +765,7 @@ func newCoorddSpawnsCmd() *cobra.Command {
 		Use:   "spawns",
 		Short: "List coordd child workstreams",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			r, _, err := openCoorddRuntime()
+			r, _, err := openCoorddRuntimeForCommand(cmd)
 			if err != nil {
 				return err
 			}
@@ -746,7 +775,7 @@ func newCoorddSpawnsCmd() *cobra.Command {
 				return err
 			}
 			if jsonFlag {
-				return outputJSON(records)
+				return writeJSON(cmd.OutOrStdout(), JSONCoorddSpawnsOutput{Spawns: records})
 			}
 			if len(records) == 0 {
 				fmt.Fprintln(cmd.OutOrStdout(), "No coordd spawns.")
@@ -769,6 +798,7 @@ func newCoorddGuardCmd() *cobra.Command {
 		Short: "Inspect and update local coordd guard configuration",
 	}
 	cmd.AddCommand(newCoorddGuardShowCmd())
+	cmd.AddCommand(newCoorddGuardDoctorCmd())
 	cmd.AddCommand(newCoorddGuardModeCmd())
 	cmd.AddCommand(newCoorddGuardAllowCmd())
 	cmd.AddCommand(newCoorddGuardBackendCmd())
@@ -778,6 +808,130 @@ func newCoorddGuardCmd() *cobra.Command {
 	return cmd
 }
 
+func newCoorddGuardDoctorCmd() *cobra.Command {
+	var jsonFlag bool
+	var profileName string
+
+	cmd := &cobra.Command{
+		Use:   "doctor",
+		Short: "Check coordd sandbox backend health",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			r, _, err := openCoorddRuntimeForCommand(cmd)
+			if err != nil {
+				return err
+			}
+			cfg, err := coordd.LoadGuardConfig(r.GraftDir)
+			if err != nil {
+				return err
+			}
+			requested, err := coorddGuardDoctorProfile(profileName)
+			if err != nil {
+				return usageError(cmd, err)
+			}
+			health := coordd.SandboxBackendHealth(r, cfg, requested)
+			diagnostics := coorddSandboxDiagnosticsToJSON(health.Diagnostics)
+			if jsonFlag {
+				if err := writeJSON(cmd.OutOrStdout(), JSONCoorddGuardDoctorOutput{
+					OK:          health.OK,
+					Health:      health,
+					Diagnostics: diagnostics,
+				}); err != nil {
+					return err
+				}
+			} else {
+				printCoorddGuardDoctorReport(cmd.OutOrStdout(), health)
+			}
+			if !health.OK {
+				return verificationFailureError(fmt.Errorf("coordd guard doctor: sandbox backend health has errors"))
+			}
+			return nil
+		},
+	}
+
+	cmd.Flags().BoolVar(&jsonFlag, "json", false, "JSON output")
+	cmd.Flags().StringVar(&profileName, "profile", "repo_write", "runtime profile to check (read_only, repo_write, network_read, repo_write_network)")
+	return cmd
+}
+
+func coorddGuardDoctorProfile(name string) (coordd.RuntimeProfile, error) {
+	switch strings.TrimSpace(name) {
+	case "", "repo_write":
+		return coordd.ResolveRuntimeProfile("repo_write", coordd.ActionPolicyAction{WritesRepo: true}), nil
+	case "read_only":
+		return coordd.ResolveRuntimeProfile("read_only", coordd.ActionPolicyAction{}), nil
+	case "network_read":
+		return coordd.ResolveRuntimeProfile("network_read", coordd.ActionPolicyAction{Network: true}), nil
+	case "repo_write_network":
+		return coordd.ResolveRuntimeProfile("repo_write_network", coordd.ActionPolicyAction{WritesRepo: true, Network: true}), nil
+	default:
+		return coordd.RuntimeProfile{}, fmt.Errorf("invalid coordd runtime profile %q", name)
+	}
+}
+
+func coorddSandboxDiagnosticsToJSON(diagnostics []coordd.SandboxBackendDiagnostic) []JSONRepositoryDiagnostic {
+	out := make([]JSONRepositoryDiagnostic, 0, len(diagnostics))
+	for _, diagnostic := range diagnostics {
+		out = append(out, JSONRepositoryDiagnostic{
+			Severity: diagnostic.Severity,
+			Code:     diagnostic.Code,
+			Message:  diagnostic.Message,
+			Repair:   diagnostic.Repair,
+		})
+	}
+	return out
+}
+
+func printCoorddGuardDoctorReport(w io.Writer, health coordd.SandboxBackendHealthReport) {
+	state := "ok"
+	if !health.OK {
+		state = "errors found"
+	}
+	fmt.Fprintf(w, "coordd guard backend health: %s\n", state)
+	fmt.Fprintf(w, "preferred_backend: %s\n", health.PreferredBackend)
+	fmt.Fprintf(w, "requested_profile: %s\n", health.RequestedProfile.Name)
+	if health.SelectedBackend != "" {
+		fmt.Fprintf(w, "selected_backend: %s\n", health.SelectedBackend)
+	}
+	if health.EffectiveProfile.Name != "" {
+		fmt.Fprintf(w, "effective_profile: %s\n", health.EffectiveProfile.Name)
+	}
+	if len(health.Degradations) > 0 {
+		fmt.Fprintln(w, "degradations:")
+		for _, degradation := range health.Degradations {
+			fmt.Fprintf(w, "  %s\n", degradation)
+		}
+	}
+	fmt.Fprintln(w, "backend_checks:")
+	for _, check := range health.Checks {
+		selected := ""
+		if check.Selected {
+			selected = " selected"
+		}
+		fmt.Fprintf(w, "  %s: %s%s\n", check.Backend, check.Status, selected)
+		if check.Runtime != "" {
+			fmt.Fprintf(w, "    runtime: %s\n", check.Runtime)
+		}
+		if check.Error != "" {
+			fmt.Fprintf(w, "    error: %s\n", check.Error)
+		}
+		if len(check.Degradations) > 0 {
+			for _, degradation := range check.Degradations {
+				fmt.Fprintf(w, "    degradation: %s\n", degradation)
+			}
+		}
+		if check.Repair != "" {
+			fmt.Fprintf(w, "    repair: %s\n", check.Repair)
+		}
+	}
+	for _, diagnostic := range health.Diagnostics {
+		fmt.Fprintf(w, "%s [%s]: %s\n", diagnostic.Severity, diagnostic.Code, diagnostic.Message)
+		if diagnostic.Repair != "" {
+			fmt.Fprintf(w, "  repair: %s\n", diagnostic.Repair)
+		}
+	}
+}
+
 func newCoorddGuardShowCmd() *cobra.Command {
 	var jsonFlag bool
 
@@ -785,7 +939,7 @@ func newCoorddGuardShowCmd() *cobra.Command {
 		Use:   "show",
 		Short: "Show local coordd guard configuration",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			r, _, err := openCoorddRuntime()
+			r, _, err := openCoorddRuntimeForCommand(cmd)
 			if err != nil {
 				return err
 			}
@@ -806,11 +960,11 @@ func newCoorddGuardShowCmd() *cobra.Command {
 				return err
 			}
 			if jsonFlag {
-				return outputJSON(map[string]any{
-					"config":     cfg,
-					"overrides":  overrideListFromSnapshot(overrideStore.Snapshot()),
-					"bundle_ids": map[string]string{"action": "coordd/action", "spawn": "coordd/spawn"},
-					"policies": map[string]coordd.PolicyBundleInfo{
+				return writeJSON(cmd.OutOrStdout(), JSONCoorddGuardShowOutput{
+					Config:    cfg,
+					Overrides: overrideListFromSnapshot(overrideStore.Snapshot()),
+					BundleIDs: map[string]string{"action": "coordd/action", "spawn": "coordd/spawn"},
+					Policies: map[string]coordd.PolicyBundleInfo{
 						"action": actionBundle,
 						"spawn":  spawnBundle,
 					},
@@ -854,7 +1008,7 @@ func newCoorddGuardModeCmd() *cobra.Command {
 				return fmt.Errorf("invalid mode %q", mode)
 			}
 
-			r, _, err := openCoorddRuntime()
+			r, _, err := openCoorddRuntimeForCommand(cmd)
 			if err != nil {
 				return err
 			}
@@ -883,7 +1037,7 @@ func newCoorddGuardAllowCmd() *cobra.Command {
 			if pattern == "" {
 				return fmt.Errorf("allow pattern cannot be empty")
 			}
-			r, _, err := openCoorddRuntime()
+			r, _, err := openCoorddRuntimeForCommand(cmd)
 			if err != nil {
 				return err
 			}
@@ -921,7 +1075,7 @@ func newCoorddGuardBackendCmd() *cobra.Command {
 				return fmt.Errorf("invalid backend %q", backend)
 			}
 
-			r, _, err := openCoorddRuntime()
+			r, _, err := openCoorddRuntimeForCommand(cmd)
 			if err != nil {
 				return err
 			}
@@ -953,7 +1107,7 @@ func newCoorddGuardRuntimeCmd() *cobra.Command {
 				return fmt.Errorf("invalid runtime %q", runtimeName)
 			}
 
-			r, _, err := openCoorddRuntime()
+			r, _, err := openCoorddRuntimeForCommand(cmd)
 			if err != nil {
 				return err
 			}
@@ -983,7 +1137,7 @@ func newCoorddGuardImageCmd() *cobra.Command {
 				return fmt.Errorf("container image cannot be empty")
 			}
 
-			r, _, err := openCoorddRuntime()
+			r, _, err := openCoorddRuntimeForCommand(cmd)
 			if err != nil {
 				return err
 			}
@@ -1020,7 +1174,7 @@ func newCoorddGuardOverrideListCmd() *cobra.Command {
 		Use:   "list",
 		Short: "List coordd policy rule overrides",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			r, _, err := openCoorddRuntime()
+			r, _, err := openCoorddRuntimeForCommand(cmd)
 			if err != nil {
 				return err
 			}
@@ -1030,7 +1184,7 @@ func newCoorddGuardOverrideListCmd() *cobra.Command {
 			}
 			entries := overrideListFromSnapshot(store.Snapshot())
 			if jsonFlag {
-				return outputJSON(entries)
+				return writeJSON(cmd.OutOrStdout(), JSONCoorddGuardOverridesOutput{Overrides: entries})
 			}
 			if len(entries) == 0 {
 				fmt.Fprintln(cmd.OutOrStdout(), "No coordd policy overrides.")
@@ -1088,7 +1242,7 @@ func newCoorddGuardOverrideSetCmd() *cobra.Command {
 				ov.Rollout = &value
 			}
 
-			r, _, err := openCoorddRuntime()
+			r, _, err := openCoorddRuntimeForCommand(cmd)
 			if err != nil {
 				return err
 			}
@@ -1123,7 +1277,7 @@ func newCoorddGuardOverrideClearCmd() *cobra.Command {
 			if rule == "" {
 				return fmt.Errorf("rule name cannot be empty")
 			}
-			r, _, err := openCoorddRuntime()
+			r, _, err := openCoorddRuntimeForCommand(cmd)
 			if err != nil {
 				return err
 			}

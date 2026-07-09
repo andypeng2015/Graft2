@@ -14,7 +14,7 @@ func newRevertCmd() *cobra.Command {
 		Short: "Revert a commit by creating an inverse commit",
 		Args:  cobra.RangeArgs(0, 1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			r, err := openRepo(".")
+			r, err := openRepoForCommand(cmd, ".")
 			if err != nil {
 				return err
 			}
